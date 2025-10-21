@@ -1,0 +1,37 @@
+version: '3.9'
+
+services:
+  colyseus:
+    build: .
+    restart: always
+    environment:
+      DATABASE_URL: "postgresql://postgres:devnova123@db:5432/nova"
+    depends_on:
+      - db
+    volumes:
+      - .:/app
+      - /app/node_modules
+    networks:
+      - nova_network
+    ports:
+      - "3001:3001"
+
+  db:
+    image: postgres:15
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: devnova123
+      POSTGRES_DB: nova
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - nova_network
+
+volumes:
+  pgdata:
+
+networks:
+  nova_network:
