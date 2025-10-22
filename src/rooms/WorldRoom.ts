@@ -1,15 +1,21 @@
 import { Room, Client } from "colyseus";
-import { WorldState, PlayerState } from "../schema/Player";
+import { PlayerState } from "../schema/Player";
 import { prisma } from "../db";
 import { v4 as uuidv4 } from "uuid";
+import { MapState } from "../schema/Map";
+import { GAME_MAPS, MAPS_KEYS } from "../db/maps";
+import { MonsterState } from "../schema/Monster";
+import { getRandomFloat } from "../utils/random";
 
-export class WorldRoom extends Room<WorldState> {
+export class WorldRoom extends Room<MapState> {
   maxClients = 100;
-  state = new WorldState();
+  state = new MapState();
 
   onCreate() {
     console.log("🌍 WorldRoom created");
-     this.onMessage("*", (client: Client, type: string|number, message: any) => {
+    this.spawnMonstersOnCreate();
+
+    this.onMessage("*", (client: Client, type: string|number, message: any) => {
         console.log(client.sessionId, "sent 'action' message: ", message);
           const player = this.state.players.get(client.sessionId);
           if (!player) return;
@@ -26,7 +32,23 @@ export class WorldRoom extends Room<WorldState> {
           }
     });
   }
-  
+
+  spawnMonstersOnCreate() {
+    const worldMap = GAME_MAPS[MAPS_KEYS.WORLD];
+    const monsterEntries = Object.entries(worldMap.availableMonsters);
+    if (monsterEntries.length === 0) return;
+    monsterEntries.forEach(([_monsterKey, monsterData]) => {
+      for (let i = 0; i < monsterData.quantity; i++) {
+        const monster = new MonsterState();
+        monster.id = `monster_${i}`;
+        monster.name = monsterData.name;
+        monster.x = getRandomFloat(-worldMap.width/2, worldMap.width/2);
+        monster.y = getRandomFloat(-worldMap.height/2, worldMap.height/2);
+        this.state.monsters.set(monster.id, monster);
+      }
+    });
+  }
+
   async onJoin(client: Client, options: any) {
     const playerName = options.name || `Player_${client.sessionId.slice(0, 4)}`;
     
