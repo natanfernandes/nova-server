@@ -37,7 +37,7 @@ export class WorldRoom extends Room<WorldState> {
 
     if (!player) {
       player = await prisma.player.create({
-        data: { id: uuidv4(), name: playerName, x: 0, y: 0, hp: 100 },
+        data: { id: uuidv4(), name: playerName, x: 0, y: 1, hp: 100 },
       });
     }
 
