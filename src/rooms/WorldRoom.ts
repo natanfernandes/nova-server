@@ -9,11 +9,15 @@ import { getRandomFloat } from "../utils/random";
 
 export class WorldRoom extends Room<MapState> {
   maxClients = 100;
+  SPEED = 5;
+  TICK_RATE = 50; // 50ms = 20 ticks per second
   state = new MapState();
 
   onCreate() {
     console.log("🌍 WorldRoom created");
     this.spawnMonstersOnCreate();
+    // Loop principal (20Hz = 50ms per tick)
+    this.setSimulationInterval((deltaMs) => this.update(deltaMs / 1000), this.TICK_RATE);
 
     this.onMessage("*", (client: Client, type: string|number, message: any) => {
         console.log(client.sessionId, "sent 'action' message: ", message);
@@ -22,8 +26,18 @@ export class WorldRoom extends Room<MapState> {
 
           switch (type) {
             case "move":
-              player.x += message.x;
-              player.y += message.y;
+              const [dx, dy, dz] = message.dir;
+              // Always update direction, even if it's zero (stopped)
+              player.dirX = dx;
+              player.dirY = dy;
+              player.dirZ = dz;
+              player.last_processed_input = message.seq;
+
+              if (dx !== 0 || dy !== 0 || dz !== 0) {
+                console.log(`Player ${player.name} is moving to direction:`, dx, dy, dz);
+              } else {
+                console.log(`Player ${player.name} stopped moving`);
+              }
               break;
             case "damage":
               player.hp -= message.amount;
@@ -48,6 +62,31 @@ export class WorldRoom extends Room<MapState> {
       }
     });
   }
+  
+ update(delta: number) {
+    for (const player of this.state.players.values()) {
+      // Only move if there's input direction
+      const isPlayerMoving = player.dirX !== 0 || player.dirY !== 0 || player.dirZ !== 0;
+      if (isPlayerMoving) {
+        const newPositionX = player.dirX * this.SPEED * delta;
+        const newPositionY = player.dirY * this.SPEED * delta;
+        const newPositionZ = player.dirZ * this.SPEED * delta;
+
+        if(newPositionX !== 0){
+          player.x += newPositionX;
+          console.log(`Player ${player.name} moved to x:`, player.x);
+        }
+        if(newPositionY !== 0){
+          player.y += newPositionY;
+          console.log(`Player ${player.name} moved to y:`, player.y);
+        }
+        if(newPositionZ !== 0){
+          player.z += newPositionZ;
+          console.log(`Player ${player.name} moved to z:`, player.z);
+        }
+      }
+    }
+  }
 
   async onJoin(client: Client, options: any) {
     const playerName = options.name || `Player_${client.sessionId.slice(0, 4)}`;
@@ -68,6 +107,7 @@ export class WorldRoom extends Room<MapState> {
     p.name = player.name;
     p.x = player.x;
     p.y = player.y;
+    p.z = player.z;
     p.hp = player.hp;
 
     this.state.players.set(client.sessionId, p);
