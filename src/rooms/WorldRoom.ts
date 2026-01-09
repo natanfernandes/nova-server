@@ -6,6 +6,8 @@ import { MapState } from "../schema/Map";
 import { GAME_MAPS, MAPS_KEYS } from "../db/maps";
 import { MonsterState } from "../schema/Monster";
 import { getRandomFloat } from "../utils/random";
+import { MAP_COLLISIONS } from "../config/mapCollisions";
+import { CollisionManager } from "../systems/CollisionManager";
 
 export class WorldRoom extends Room<MapState> {
   maxClients = 100;
@@ -15,8 +17,15 @@ export class WorldRoom extends Room<MapState> {
   MAP = GAME_MAPS[MAPS_KEYS.WORLD];
   state = new MapState();
 
+  // Collision system
+  collisionManager: CollisionManager;
+
   onCreate() {
     console.log("🌍 WorldRoom created");
+
+    // Initialize collision system
+    this.collisionManager = new CollisionManager(MAP_COLLISIONS.world, this.PLAYER_RADIUS);
+
     this.spawnMonstersOnCreate();
     // Loop principal (20Hz = 50ms per tick)
     this.setSimulationInterval((deltaMs) => this.update(deltaMs / 1000), this.TICK_RATE);
@@ -49,25 +58,6 @@ export class WorldRoom extends Room<MapState> {
     });
   }
 
-  // Check if a position would collide with other players
-  checkPlayerCollision(currentPlayer: PlayerState, newX: number, newZ: number): boolean {
-    for (const otherPlayer of this.state.players.values()) {
-      // Skip self
-      if (otherPlayer.id === currentPlayer.id) continue;
-
-      // Calculate distance between players (only X and Z, ignore Y)
-      const dx = newX - otherPlayer.x;
-      const dz = newZ - otherPlayer.z;
-      const distance = Math.sqrt(dx * dx + dz * dz);
-
-      // Check if players would overlap (both radii combined)
-      const minDistance = this.PLAYER_RADIUS * 2;
-      if (distance < minDistance) {
-        return true; // Collision detected
-      }
-    }
-    return false; // No collision
-  }
 
   spawnMonstersOnCreate() {
     const monsterEntries = Object.entries(this.MAP.availableMonsters);
@@ -93,10 +83,15 @@ export class WorldRoom extends Room<MapState> {
         const newX = player.x + (player.dirX * this.SPEED * delta);
         const newZ = player.z + (player.dirZ * this.SPEED * delta);
 
-        // Check collision before moving
-        const wouldCollide = this.checkPlayerCollision(player, newX, newZ);
+        // Check collision before moving (both map and players)
+        const collision = this.collisionManager.checkAllCollisions(
+          player,
+          newX,
+          newZ,
+          this.state.players.values()
+        );
 
-        if (!wouldCollide) {
+        if (!collision.any) {
           // No collision - move normally
           player.x = newX;
           player.z = newZ;
@@ -109,7 +104,12 @@ export class WorldRoom extends Room<MapState> {
           // Collision detected - stop the player
           player.dirX = 0;
           player.dirZ = 0;
-          console.log(`Player ${player.name} collided with another player`);
+          if (collision.map) {
+            console.log(`Player ${player.name} collided with map obstacle`);
+          }
+          if (collision.player) {
+            console.log(`Player ${player.name} collided with another player`);
+          }
         }
       }
     }
