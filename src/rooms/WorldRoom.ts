@@ -11,6 +11,7 @@ export class WorldRoom extends Room<MapState> {
   maxClients = 100;
   SPEED = 5;
   TICK_RATE = 50; // 50ms = 20 ticks per second
+  PLAYER_RADIUS = 0.5; // collision radius for players
   MAP = GAME_MAPS[MAPS_KEYS.WORLD];
   state = new MapState();
 
@@ -48,6 +49,26 @@ export class WorldRoom extends Room<MapState> {
     });
   }
 
+  // Check if a position would collide with other players
+  checkPlayerCollision(currentPlayer: PlayerState, newX: number, newZ: number): boolean {
+    for (const otherPlayer of this.state.players.values()) {
+      // Skip self
+      if (otherPlayer.id === currentPlayer.id) continue;
+
+      // Calculate distance between players (only X and Z, ignore Y)
+      const dx = newX - otherPlayer.x;
+      const dz = newZ - otherPlayer.z;
+      const distance = Math.sqrt(dx * dx + dz * dz);
+
+      // Check if players would overlap (both radii combined)
+      const minDistance = this.PLAYER_RADIUS * 2;
+      if (distance < minDistance) {
+        return true; // Collision detected
+      }
+    }
+    return false; // No collision
+  }
+
   spawnMonstersOnCreate() {
     const monsterEntries = Object.entries(this.MAP.availableMonsters);
     if (monsterEntries.length === 0) return;
@@ -68,21 +89,27 @@ export class WorldRoom extends Room<MapState> {
       // Only move if there's input direction
       const isPlayerMoving = player.dirX !== 0 || player.dirY !== 0 || player.dirZ !== 0;
       if (isPlayerMoving) {
-        const newPositionX = player.dirX * this.SPEED * delta;
-        const newPositionY = player.dirY * this.SPEED * delta;
-        const newPositionZ = player.dirZ * this.SPEED * delta;
+        // Calculate new position
+        const newX = player.x + (player.dirX * this.SPEED * delta);
+        const newZ = player.z + (player.dirZ * this.SPEED * delta);
 
-        if(newPositionX !== 0){
-          player.x += newPositionX;
-          console.log(`Player ${player.name} moved to x:`, player.x);
-        }
-        if(newPositionY !== 0){
-          player.y += newPositionY;
-          console.log(`Player ${player.name} moved to y:`, player.y);
-        }
-        if(newPositionZ !== 0){
-          player.z += newPositionZ;
-          console.log(`Player ${player.name} moved to z:`, player.z);
+        // Check collision before moving
+        const wouldCollide = this.checkPlayerCollision(player, newX, newZ);
+
+        if (!wouldCollide) {
+          // No collision - move normally
+          player.x = newX;
+          player.z = newZ;
+
+          // Y movement (jumping, etc.) - no collision check for now
+          if (player.dirY !== 0) {
+            player.y += player.dirY * this.SPEED * delta;
+          }
+        } else {
+          // Collision detected - stop the player
+          player.dirX = 0;
+          player.dirZ = 0;
+          console.log(`Player ${player.name} collided with another player`);
         }
       }
     }
