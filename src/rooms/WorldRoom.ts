@@ -11,6 +11,7 @@ export class WorldRoom extends Room<MapState> {
   maxClients = 100;
   SPEED = 5;
   TICK_RATE = 50; // 50ms = 20 ticks per second
+  MAP = GAME_MAPS[MAPS_KEYS.WORLD];
   state = new MapState();
 
   onCreate() {
@@ -48,16 +49,15 @@ export class WorldRoom extends Room<MapState> {
   }
 
   spawnMonstersOnCreate() {
-    const worldMap = GAME_MAPS[MAPS_KEYS.WORLD];
-    const monsterEntries = Object.entries(worldMap.availableMonsters);
+    const monsterEntries = Object.entries(this.MAP.availableMonsters);
     if (monsterEntries.length === 0) return;
     monsterEntries.forEach(([_monsterKey, monsterData]) => {
       for (let i = 0; i < monsterData.quantity; i++) {
         const monster = new MonsterState();
         monster.id = `monster_${i}`;
         monster.name = monsterData.name;
-        monster.x = getRandomFloat(-worldMap.width/2, worldMap.width/2);
-        monster.y = getRandomFloat(-worldMap.height/2, worldMap.height/2);
+        monster.x = getRandomFloat(-this.MAP.width/2, this.MAP.width/2);
+        monster.y = getRandomFloat(-this.MAP.height/2, this.MAP.height/2);
         this.state.monsters.set(monster.id, monster);
       }
     });
@@ -98,11 +98,12 @@ export class WorldRoom extends Room<MapState> {
 
     if (!player) {
       player = await prisma.player.create({
-        data: { id: uuidv4(), name: playerName, x: 0, y: 1, hp: 100 },
+        data: { id: uuidv4(), name: playerName, x: getRandomFloat(-this.MAP.width/2, this.MAP.width/2), y: 1, hp: 100 },
       });
     }
 
     const p = new PlayerState();
+    
     p.id = player.id;
     p.name = player.name;
     p.x = player.x;
