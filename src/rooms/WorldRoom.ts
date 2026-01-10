@@ -6,6 +6,7 @@ import { MapState } from "../schema/Map";
 import { GAME_MAPS, MAPS_KEYS } from "../db/maps";
 import { MonsterState } from "../schema/Monster";
 import { CollisionManager } from "../systems/CollisionManager";
+import { MAP_OBSTACLES, CollisionShape } from "../config/mapCollisions";
 import {
   isMoving,
   getRandomDirection,
@@ -47,15 +48,22 @@ export class WorldRoom extends Room<MapState> {
     // Generate dynamic map boundary collisions based on actual map size
     const mapBoundaryWalls = generateMapBoundaryCollisions(this.MAP_BOUNDARIES);
 
-    // Combine auto-generated boundaries with any custom obstacles from config
+    // Convert obstacle configs to collision shapes
+    const obstacleCollisions = this.convertObstaclesToCollisions(MAP_OBSTACLES.world);
+
+    // Debug: Log obstacle collisions
+    console.log('🔍 Obstacle collisions:', JSON.stringify(obstacleCollisions, null, 2));
+
+    // Combine boundaries + obstacles
     const allCollisions = [
       ...mapBoundaryWalls,
-      // Add custom obstacles here if needed (trees, buildings, etc.)
-      // ...MAP_COLLISIONS.world  // Uncomment to add custom obstacles
+      ...obstacleCollisions,
     ];
 
-    // Initialize collision system with dynamic boundaries
+    // Initialize collision system
     this.collisionManager = new CollisionManager(allCollisions, this.PLAYER_RADIUS);
+
+    console.log(`✅ Loaded ${obstacleCollisions.length} obstacles with collision`);
 
     this.spawnMonstersOnCreate();
     // Loop principal (20Hz = 50ms per tick)
@@ -64,10 +72,10 @@ export class WorldRoom extends Room<MapState> {
     this.onMessage("*", (client: Client, type: string|number, message: any) => {
         console.log(client.sessionId, "sent 'action' message: ", message);
           const player = this.state.players.get(client.sessionId);
-          if (!player) return;
 
           switch (type) {
             case "move":
+              if (!player) return;
               const [dx, dy, dz] = message.dir;
               // Always update direction, even if it's zero (stopped)
               player.dirX = dx;
@@ -81,7 +89,9 @@ export class WorldRoom extends Room<MapState> {
                 console.log(`Player ${player.name} stopped moving`);
               }
               break;
+
             case "damage":
+              if (!player) return;
               player.hp -= message.amount;
               if (player.hp < 0) player.hp = 0;
               break;
@@ -89,6 +99,32 @@ export class WorldRoom extends Room<MapState> {
     });
   }
 
+  /**
+   * Convert obstacle configurations to collision shapes
+   */
+  convertObstaclesToCollisions(obstacles: typeof MAP_OBSTACLES.world): CollisionShape[] {
+    return obstacles.map((obstacle) => {
+      if (obstacle.collisionType === "box") {
+        return {
+          type: "box" as const,
+          x: obstacle.position.x,
+          z: obstacle.position.z,
+          width: obstacle.size?.x || 2,
+          depth: obstacle.size?.z || 2,
+          sceneObjectId: obstacle.id,
+        };
+      } else {
+        // Circle collision
+        return {
+          type: "circle" as const,
+          x: obstacle.position.x,
+          z: obstacle.position.z,
+          radius: obstacle.position.radius || obstacle.size?.radius || 1,
+          sceneObjectId: obstacle.id,
+        };
+      }
+    });
+  }
 
   spawnMonstersOnCreate() {
     const monsterEntries = Object.entries(this.MAP.availableMonsters);
@@ -281,6 +317,11 @@ export class WorldRoom extends Room<MapState> {
 
     this.state.players.set(client.sessionId, p);
     console.log(`👤 ${p.name} entrou no mundo`);
+
+    // Send obstacle data to client so they can spawn 3D assets
+    this.send(client, "spawn_obstacles", {
+      obstacles: MAP_OBSTACLES.world
+    });
   }
 
   async onLeave(client: Client) {
