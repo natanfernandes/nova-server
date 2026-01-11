@@ -7,6 +7,7 @@ export interface Box {
   z: number;      // Center Z position
   width: number;  // Width (X axis)
   depth: number;  // Depth (Z axis)
+  rotation?: number; // Rotation in radians around Y axis (default: 0)
   sceneObjectId?: string; // Optional: ID of the 3D object in the scene
 }
 
@@ -69,7 +70,7 @@ export const WORLD_MAP_OBSTACLES: MapObstacle[] = [
   // { id: 'tree_3', assetId: 'tree_pine', collisionType: 'circle', x: 5, z: -8, radius: 1.5 },
 
   // Buildings (box collision)
-  { id: 'generator', assetId: 'generator', collisionType: 'box', size: { x: 2.8, y:1.7, z: 5.8 }, position: { x: 6, z: 1 }, rotation: 0 },
+  { id: 'usables_shop_1', assetId: 'usables_shop_1', collisionType: 'box', size: { x: 5, y:2.8, z: 4.5 }, position: { x: 10, z: 6 }, rotation: -(Math.PI / 4 ) },
   // { id: 'house_2', assetId: 'house_large', collisionType: 'box', x: 20, z: -20, width: 10, depth: 8, rotation: 1.57 },
 
   // Rocks (circle collision)

@@ -16,7 +16,7 @@ export class CollisionManager {
   }
 
   /**
-   * Check if a circle collides with a box (AABB vs Circle)
+   * Check if a circle collides with a box (supports rotation)
    */
   private circleBoxCollision(
     circleX: number,
@@ -24,19 +24,52 @@ export class CollisionManager {
     circleRadius: number,
     box: Box
   ): boolean {
-    // Find the closest point on the box to the circle
+    const rotation = box.rotation ?? 0;
+
+    // If no rotation, use faster AABB collision
+    if (rotation === 0) {
+      // Find the closest point on the box to the circle
+      const closestX = Math.max(
+        box.x - box.width / 2,
+        Math.min(circleX, box.x + box.width / 2)
+      );
+      const closestZ = Math.max(
+        box.z - box.depth / 2,
+        Math.min(circleZ, box.z + box.depth / 2)
+      );
+
+      // Calculate distance from circle center to closest point
+      const dx = circleX - closestX;
+      const dz = circleZ - closestZ;
+      const distance = Math.sqrt(dx * dx + dz * dz);
+
+      return distance < circleRadius;
+    }
+
+    // For rotated boxes, transform circle to box's local space
+    // Translate circle to box origin
+    const localX = circleX - box.x;
+    const localZ = circleZ - box.z;
+
+    // Rotate circle position by inverse rotation (rotate back to axis-aligned)
+    const cos = Math.cos(-rotation);
+    const sin = Math.sin(-rotation);
+    const rotatedX = localX * cos - localZ * sin;
+    const rotatedZ = localX * sin + localZ * cos;
+
+    // Now do AABB collision in local space
     const closestX = Math.max(
-      box.x - box.width / 2,
-      Math.min(circleX, box.x + box.width / 2)
+      -box.width / 2,
+      Math.min(rotatedX, box.width / 2)
     );
     const closestZ = Math.max(
-      box.z - box.depth / 2,
-      Math.min(circleZ, box.z + box.depth / 2)
+      -box.depth / 2,
+      Math.min(rotatedZ, box.depth / 2)
     );
 
-    // Calculate distance from circle center to closest point
-    const dx = circleX - closestX;
-    const dz = circleZ - closestZ;
+    // Calculate distance
+    const dx = rotatedX - closestX;
+    const dz = rotatedZ - closestZ;
     const distance = Math.sqrt(dx * dx + dz * dz);
 
     return distance < circleRadius;
