@@ -8,8 +8,8 @@ export const MAPS_KEYS = {
 const WORLD_MAP = {
     id: 'world',
     name: 'World Map',
-    width: 50,
-    height: 50,
+    width: 128,
+    height: 128,
     availableMonsters: {
         [MONSTERS_KEYS.PORING]: {
             quantity: 10,

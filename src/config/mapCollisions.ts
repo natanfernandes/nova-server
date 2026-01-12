@@ -51,10 +51,10 @@ export interface ObstaclePosition {
 export const WORLD_MAP_COLLISIONS: CollisionShape[] = [
   // Add custom static obstacles here (not tied to 3D scene objects)
   // Example: invisible walls, barriers, etc.
-  { type: 'box', x: 0, z: -50, width: 100, depth: 2 },   // North wall
-  { type: 'box', x: 0, z: 50, width: 100, depth: 2 },    // South wall
-  { type: 'box', x: -50, z: 0, width: 2, depth: 100 },   // West wall
-  { type: 'box', x: 50, z: 0, width: 2, depth: 100 },    // East wall
+  { type: 'box', x: 0, z: -128, width: 100, depth: 2 },   // North wall
+  { type: 'box', x: 0, z: 128, width: 100, depth: 2 },    // South wall
+  { type: 'box', x: -128, z: 0, width: 2, depth: 100 },   // West wall
+  { type: 'box', x: 128, z: 0, width: 2, depth: 100 },    // East wall
 ];
 
 /**
@@ -70,7 +70,7 @@ export const WORLD_MAP_OBSTACLES: MapObstacle[] = [
   // { id: 'tree_3', assetId: 'tree_pine', collisionType: 'circle', x: 5, z: -8, radius: 1.5 },
 
   // Buildings (box collision)
-  { id: 'usables_shop_1', assetId: 'usables_shop_1', collisionType: 'box', size: { x: 5, y:2.8, z: 4.5 }, position: { x: 10, z: 6 }, rotation: -(Math.PI / 4 ) },
+  { id: 'usables_shop_1', assetId: 'usables_shop_1', collisionType: 'box', size: { x: 5, y:2.8, z: 4.5 }, position: { x: 21.3, z: 0 }, rotation: -(Math.PI / 4 ) },
   // { id: 'house_2', assetId: 'house_large', collisionType: 'box', x: 20, z: -20, width: 10, depth: 8, rotation: 1.57 },
 
   // Rocks (circle collision)
