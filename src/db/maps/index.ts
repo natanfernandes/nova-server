@@ -12,7 +12,7 @@ const WORLD_MAP = {
     height: 128,
     availableMonsters: {
         [MONSTERS_KEYS.PORING]: {
-            quantity: 10,
+            quantity: 100,
             ...MONSTERS[MONSTERS_KEYS.PORING],
         },
     },
