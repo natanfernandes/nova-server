@@ -6,7 +6,7 @@ import { MapState } from "../schema/Map";
 import { GAME_MAPS, MAPS_KEYS } from "../db/maps";
 import { MonsterState } from "../schema/Monster";
 import { CollisionManager } from "../systems/CollisionManager";
-import { MAP_OBSTACLES, CollisionShape } from "../config/mapCollisions";
+import { MAP_OBSTACLES } from "../config/mapCollisions";
 import {
   isMoving,
   getRandomDirection,
@@ -21,6 +21,7 @@ import {
   generateMapBoundaryCollisions,
   MapBoundaries,
 } from "../utils/mapUtils";
+import { CollisionShape } from "../utils/obstacles";
 
 export class WorldRoom extends Room<MapState> {
   maxClients = 100;

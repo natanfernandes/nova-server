@@ -1,5 +1,5 @@
-import { CollisionShape, Box, Circle } from "../config/mapCollisions";
 import { PlayerState } from "../schema/Player";
+import { Box, CollisionShape } from "../utils/obstacles";
 
 /**
  * Collision Manager

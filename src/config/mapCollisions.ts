@@ -1,56 +1,9 @@
 // Map collision configuration
 // Define walls, obstacles, and other collision shapes here
+import { CollisionShape, createBoxObstacle, createWall, MapObstacle } from "../utils/obstacles";
 
-export interface Box {
-  type: 'box';
-  x: number;      // Center X position
-  z: number;      // Center Z position
-  width: number;  // Width (X axis)
-  depth: number;  // Depth (Z axis)
-  rotation?: number; // Rotation in radians around Y axis (default: 0)
-  sceneObjectId?: string; // Optional: ID of the 3D object in the scene
-}
 
-export interface Circle {
-  type: 'circle';
-  x: number;      // Center X position
-  z: number;      // Center Z position
-  radius: number; // Collision radius
-  sceneObjectId?: string; // Optional: ID of the 3D object in the scene
-}
-
-export type CollisionShape = Box | Circle;
-
-/**
- * Map obstacle configuration
- * Server defines obstacles with positions, client renders them
- */
-export interface MapObstacle {
-  id: string;           // Unique ID for this obstacle instance
-  assetId: string;      // ID of the 3D asset/prefab to spawn (e.g., "tree_pine", "rock_large", "house_1")
-  collisionType: 'box' | 'circle';
-  position: ObstaclePosition;       // Optional height (default: 0 or ground level)
-  // Rotation (optional)
-  rotation?: number;    // Rotation in radians around Y axis
-  // For box collision
-  size?: ObstacleSize;
-}
-export interface ObstacleSize {
-  x: number;
-  z: number;
-  y?: number;
-  radius?: number;
-}
-export interface ObstaclePosition {
-  x: number;
-  z: number;
-  y?: number;
-  radius?: number;
-}
-// World map static collisions (no longer used for boundaries - auto-generated now)
 export const WORLD_MAP_COLLISIONS: CollisionShape[] = [
-  // Add custom static obstacles here (not tied to 3D scene objects)
-  // Example: invisible walls, barriers, etc.
   { type: 'box', x: 0, z: -128, width: 100, depth: 2 },   // North wall
   { type: 'box', x: 0, z: 128, width: 100, depth: 2 },    // South wall
   { type: 'box', x: -128, z: 0, width: 2, depth: 100 },   // West wall
@@ -62,20 +15,11 @@ export const WORLD_MAP_COLLISIONS: CollisionShape[] = [
  * Server defines all obstacles with positions, client spawns the 3D assets
  */
 export const WORLD_MAP_OBSTACLES: MapObstacle[] = [
-  // Example obstacles - server defines position, client renders
-
-  // Trees (circle collision)
-  // { id: 'tree_1', assetId: 'tree_pine', collisionType: 'circle', x: 10, z: 10, radius: 1.5 },
-  // { id: 'tree_2', assetId: 'tree_oak', collisionType: 'circle', x: -15, z: 20, radius: 2, rotation: 0.5 },
-  // { id: 'tree_3', assetId: 'tree_pine', collisionType: 'circle', x: 5, z: -8, radius: 1.5 },
-
   // Buildings (box collision)
-  { id: 'usables_shop_1', assetId: 'usables_shop_1', collisionType: 'box', size: { x: 5, y:2.8, z: 4.5 }, position: { x: 21.3, z: 0 }, rotation: -(Math.PI / 4 ) },
-  // { id: 'house_2', assetId: 'house_large', collisionType: 'box', x: 20, z: -20, width: 10, depth: 8, rotation: 1.57 },
+  createBoxObstacle('usables_shop_1', 'usables_shop_1', 21.52, -0.73, 4.75, 4.5, 2.8, -30),
 
-  // Rocks (circle collision)
-  // { id: 'rock_1', assetId: 'rock_large', collisionType: 'circle', x: 30, z: 15, radius: 2 },
-  // { id: 'rock_2', assetId: 'rock_small', collisionType: 'circle', x: -5, z: -12, radius: 1 },
+  // Walls (using helper functions for cleaner code)
+  createWall('shop_north_wall', 19.5, -7.5, 30.5, -7.5, 1, 1),
 ];
 
 // Map collision configurations
