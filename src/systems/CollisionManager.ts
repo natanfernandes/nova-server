@@ -160,6 +160,68 @@ export class CollisionManager {
   }
 
   /**
+   * Check if a position is valid (not colliding with anything)
+   * Useful for validating click targets before pathfinding
+   */
+  isPositionValid(x: number, z: number, radius?: number): boolean {
+    return !this.checkMapCollision(x, z, radius);
+  }
+
+  /**
+   * Try to slide along obstacles when collision occurs
+   * Returns adjusted position that allows sliding along walls
+   */
+  trySlideMovement(
+    currentX: number,
+    currentZ: number,
+    targetX: number,
+    targetZ: number,
+    currentPlayer?: PlayerState,
+    allPlayers?: Iterable<PlayerState>
+  ): { x: number; z: number; collided: boolean } {
+    // Check if current position is already colliding (player is stuck inside)
+    const currentCollision = this.checkMapCollision(currentX, currentZ);
+    if (currentCollision) {
+      // Player is stuck inside an obstacle - try to push them out
+      // For now, just prevent any movement to avoid jittering
+      return { x: currentX, z: currentZ, collided: true };
+    }
+
+    // If target position is valid, use it
+    const targetCollision = this.checkMapCollision(targetX, targetZ);
+    const targetPlayerCollision = currentPlayer && allPlayers
+      ? this.checkPlayerCollision(currentPlayer, targetX, targetZ, allPlayers)
+      : false;
+
+    if (!targetCollision && !targetPlayerCollision) {
+      return { x: targetX, z: targetZ, collided: false };
+    }
+
+    // Target position has collision - try sliding along X axis only
+    const slideXCollision = this.checkMapCollision(targetX, currentZ);
+    const slideXPlayerCollision = currentPlayer && allPlayers
+      ? this.checkPlayerCollision(currentPlayer, targetX, currentZ, allPlayers)
+      : false;
+
+    if (!slideXCollision && !slideXPlayerCollision) {
+      return { x: targetX, z: currentZ, collided: true };
+    }
+
+    // Try sliding along Z axis only
+    const slideZCollision = this.checkMapCollision(currentX, targetZ);
+    const slideZPlayerCollision = currentPlayer && allPlayers
+      ? this.checkPlayerCollision(currentPlayer, currentX, targetZ, allPlayers)
+      : false;
+
+    if (!slideZCollision && !slideZPlayerCollision) {
+      return { x: currentX, z: targetZ, collided: true };
+    }
+
+    // Cannot slide in any direction - stay in current position
+    return { x: currentX, z: currentZ, collided: true };
+  }
+
+  /**
    * Find a safe spawn position (no collisions)
    */
   findSafeSpawnPosition(

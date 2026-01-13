@@ -185,32 +185,23 @@ export class WorldRoom extends Room<MapState> {
       delta
     );
 
-    // Check collision before moving (both map and players)
-    const collision = this.collisionManager.checkAllCollisions(
-      player,
+    // Try to move with collision sliding
+    const slideResult = this.collisionManager.trySlideMovement(
+      player.x,
+      player.z,
       newX,
       newZ,
+      player,
       this.state.players.values()
     );
 
-    if (!collision.any) {
-      // No collision - move normally
-      player.x = newX;
-      player.z = newZ;
+    // Update player position (may be slid along walls)
+    player.x = slideResult.x;
+    player.z = slideResult.z;
 
-      // Y movement (jumping, etc.) - no collision check for now
-      if (player.dirY !== 0) {
-        player.y += player.dirY * this.SPEED * delta;
-      }
-    } else {
-      // Collision detected - don't move, but keep the direction
-      // This allows the player to continue moving if the obstacle clears
-      if (collision.map) {
-        console.log(`Player ${player.name} collided with map obstacle`);
-      }
-      if (collision.player) {
-        console.log(`Player ${player.name} collided with another player`);
-      }
+    // Y movement (jumping, etc.) - no collision check for now
+    if (player.dirY !== 0) {
+      player.y += player.dirY * this.SPEED * delta;
     }
   }
 
@@ -264,19 +255,20 @@ export class WorldRoom extends Room<MapState> {
       delta
     );
 
-    // Check collision with map
-    const mapCollision = this.collisionManager.checkMapCollision(
+    // Try to move with collision sliding
+    const slideResult = this.collisionManager.trySlideMovement(
+      monster.x,
+      monster.z,
       newX,
-      newZ,
-      this.MONSTER_RADIUS
+      newZ
     );
 
-    if (!mapCollision) {
-      // No collision - move normally
-      monster.x = newX;
-      monster.z = newZ;
-    } else {
-      // Collision detected - stop and force new decision next tick
+    // Update monster position (may be slid along walls)
+    monster.x = slideResult.x;
+    monster.z = slideResult.z;
+
+    // If monster is completely blocked, force new direction next tick
+    if (slideResult.collided && slideResult.x === monster.x && slideResult.z === monster.z) {
       const stop = stopMovement();
       monster.dirX = stop.dirX;
       monster.dirZ = stop.dirZ;
