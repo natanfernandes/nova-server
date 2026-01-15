@@ -115,6 +115,10 @@ export class WorldRoom extends Room<MapState> {
               this.handlePlayerAttack(client, message);
               break;
 
+            case "skill":
+              this.handlePlayerSkill(client, message);
+              break;
+
             case "damage":
               if (!player) return;
               player.currentHp -= message.amount;
@@ -418,6 +422,149 @@ export class WorldRoom extends Room<MapState> {
       player.isAttacking = false;
       player.targetId = "";
     }, 100);
+  }
+
+  /**
+   * Handle player skill request
+   */
+  handlePlayerSkill(client: Client, message: any) {
+    const player = this.state.players.get(client.sessionId);
+    const playerEntity = this.playerEntities.get(client.sessionId);
+
+    if (!player || !playerEntity) {
+      console.log(`⚠️ Skill failed: Player not found`);
+      return;
+    }
+
+    const { skillId, targetId, targetType } = message;
+
+    // Update player entity position
+    playerEntity.setPosition(player.x, player.y, player.z);
+
+    // Get skill configuration
+    const skillConfig = this.getSkillConfig(skillId);
+    if (!skillConfig) {
+      this.send(client, "skill_failed", {
+        reason: "Unknown skill",
+        skillId: skillId,
+      });
+      return;
+    }
+
+    // Find target if skill requires one
+    let targetEntity = null;
+    let targetState = null;
+
+    if (targetType === "monster" && targetId) {
+      targetEntity = this.monsterEntities.get(targetId);
+      targetState = this.state.monsters.get(targetId);
+    } else if (targetType === "player" && targetId) {
+      targetEntity = this.playerEntities.get(targetId);
+      targetState = this.state.players.get(targetId);
+    }
+
+    // Validate target exists for targeted skills
+    if (skillConfig.requiresTarget && (!targetEntity || !targetState)) {
+      this.send(client, "skill_failed", {
+        reason: "Invalid target",
+        skillId: skillId,
+      });
+      return;
+    }
+
+    // Update target position if exists
+    if (targetEntity && targetState) {
+      targetEntity.setPosition(targetState.x, targetState.y, targetState.z);
+    }
+
+    // Check range
+    if (targetEntity && skillConfig.range > 0) {
+      const distance = playerEntity.distanceTo(targetEntity);
+      if (distance > skillConfig.range) {
+        this.send(client, "skill_failed", {
+          reason: "Out of range",
+          skillId: skillId,
+        });
+        return;
+      }
+    }
+
+    // Check if target is dead
+    if (targetEntity && targetEntity.isDead) {
+      this.send(client, "skill_failed", {
+        reason: "Target is dead",
+        skillId: skillId,
+      });
+      return;
+    }
+
+    // Calculate and apply damage
+    let damage = 0;
+    let killed = false;
+
+    if (skillConfig.damage > 0 && targetEntity) {
+      damage = Math.floor(skillConfig.damage * playerEntity.stats.damageMultiplier);
+      targetEntity.takeDamage(damage);
+      killed = targetEntity.isDead;
+
+      // Update target HP in schema
+      if (targetType === "monster" && targetState) {
+        (targetState as MonsterState).currentHp = targetEntity.stats.currentHp;
+        (targetState as MonsterState).isDead = targetEntity.isDead;
+      } else if (targetState) {
+        (targetState as PlayerState).currentHp = targetEntity.stats.currentHp;
+      }
+    }
+
+    // Set attacking state
+    player.isAttacking = true;
+    player.targetId = targetId || "";
+
+    // Broadcast skill to all clients
+    this.broadcast("skill_used", {
+      playerId: client.sessionId,
+      playerName: player.name,
+      skillId: skillId,
+      targetId: targetId,
+      targetType: targetType,
+      damage: damage,
+      killed: killed,
+      targetHp: targetEntity?.stats.currentHp ?? 0,
+      targetMaxHp: targetEntity?.stats.maxHp ?? 0,
+    });
+
+    console.log(
+      `✨ ${player.name} used ${skillId} on ${targetState?.name || "no target"} for ${damage} damage`
+    );
+
+    // Handle monster death and respawn
+    if (killed && targetType === "monster" && targetEntity) {
+      setTimeout(() => {
+        this.handleMonsterRespawn(targetId);
+      }, (targetEntity as MonsterEntity).respawnTime * 1000);
+    }
+
+    // Reset attacking state after a short delay
+    setTimeout(() => {
+      player.isAttacking = false;
+      player.targetId = "";
+    }, 100);
+  }
+
+  /**
+   * Get skill configuration by ID
+   */
+  getSkillConfig(skillId: string): { damage: number; range: number; requiresTarget: boolean } | null {
+    const skills: Record<string, { damage: number; range: number; requiresTarget: boolean }> = {
+      fireball: {
+        damage: 25,
+        range: 5.0,
+        requiresTarget: true,
+      },
+      // Add more skills here
+    };
+
+    return skills[skillId] || null;
   }
 
   /**
