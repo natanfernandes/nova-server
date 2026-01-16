@@ -14,6 +14,7 @@ import {
   stopMovement,
   shouldDoAction,
   getRandomInterval,
+  getDirectionToTarget,
 } from "../utils/movement";
 import {
   getMapBoundaries,
@@ -50,6 +51,9 @@ export class WorldRoom extends Room<MapState> {
 
   // Monster AI timers (per monster)
   monsterAITimers: Map<string, number> = new Map();
+
+  // Monster combat state
+  monsterAggro: Map<string, string> = new Map(); // monsterId -> playerSessionId
 
   onCreate() {
     console.log("🌍 WorldRoom created");
@@ -260,8 +264,16 @@ export class WorldRoom extends Room<MapState> {
 
   updateMonsterAI(delta: number) {
     for (const monster of this.state.monsters.values()) {
-      // Update AI decision timer
-      this.updateMonsterAIDecision(monster, delta);
+      if (monster.isDead) continue;
+
+      // Check if monster has aggro target
+      const targetSessionId = this.monsterAggro.get(monster.id);
+      if (targetSessionId) {
+        this.updateMonsterCombatAI(monster, targetSessionId, delta);
+      } else {
+        // No aggro - wander behavior
+        this.updateMonsterWanderAI(monster, delta);
+      }
 
       // Move monster if it has direction
       if (isMoving(monster.dirX, 0, monster.dirZ)) {
@@ -270,7 +282,46 @@ export class WorldRoom extends Room<MapState> {
     }
   }
 
-  updateMonsterAIDecision(monster: MonsterState, delta: number) {
+  updateMonsterCombatAI(monster: MonsterState, targetSessionId: string, delta: number) {
+    const targetPlayer = this.state.players.get(targetSessionId);
+
+    // Clear aggro if target is gone or dead
+    if (!targetPlayer || targetPlayer.currentHp <= 0) {
+      this.monsterAggro.delete(monster.id);
+      monster.targetId = "";
+      return;
+    }
+
+    // Calculate direction and distance to player
+    const { dirX, dirZ, distance } = getDirectionToTarget(
+      monster.x, monster.z,
+      targetPlayer.x, targetPlayer.z
+    );
+
+    // If player is too far, drop aggro (leash distance)
+    const LEASH_DISTANCE = 15.0;
+    if (distance > LEASH_DISTANCE) {
+      this.monsterAggro.delete(monster.id);
+      monster.targetId = "";
+      monster.dirX = 0;
+      monster.dirZ = 0;
+      return;
+    }
+
+    // If in attack range, stop and attack
+    if (distance <= monster.attackRange) {
+      console.log(`👹 ${monster.name} in range (${distance.toFixed(2)} <= ${monster.attackRange}), attempting attack`);
+      monster.dirX = 0;
+      monster.dirZ = 0;
+      this.tryMonsterAttack(monster, targetPlayer, targetSessionId);
+    } else {
+      // Chase the player
+      monster.dirX = dirX;
+      monster.dirZ = dirZ;
+    }
+  }
+
+  updateMonsterWanderAI(monster: MonsterState, delta: number) {
     // Get or initialize timer for this monster
     let timer = this.monsterAITimers.get(monster.id) || 0;
     timer -= delta;
@@ -295,6 +346,60 @@ export class WorldRoom extends Room<MapState> {
     } else {
       this.monsterAITimers.set(monster.id, timer);
     }
+  }
+
+  tryMonsterAttack(monster: MonsterState, targetPlayer: PlayerState, targetSessionId: string) {
+    const monsterEntity = this.monsterEntities.get(monster.id);
+    const playerEntity = this.playerEntities.get(targetSessionId);
+
+    if (!monsterEntity || !playerEntity) {
+      console.log(`👹 tryMonsterAttack failed: entities not found - monster: ${!!monsterEntity}, player: ${!!playerEntity}`);
+      return;
+    }
+
+    // Update positions for combat calculation
+    monsterEntity.setPosition(monster.x, monster.y, monster.z);
+    playerEntity.setPosition(targetPlayer.x, targetPlayer.y, targetPlayer.z);
+
+    // Process attack through combat manager (handles cooldown internally via entity.canAttack)
+    const result = this.combatManager.processAttack(
+      monsterEntity,
+      playerEntity,
+      Date.now()
+    );
+
+    if (!result.success) {
+      console.log(`👹 Monster attack failed: ${result.reason}`);
+      return;
+    }
+
+    // Update player HP in schema
+    targetPlayer.currentHp = playerEntity.stats.currentHp;
+
+    // Set monster attacking state
+    monster.isAttacking = true;
+    monster.targetId = targetPlayer.id;
+
+    // Broadcast monster attack to all clients
+    this.broadcast("monster_attacked", {
+      monsterId: monster.id,
+      monsterName: monster.name,
+      targetId: targetPlayer.id,
+      targetName: targetPlayer.name,
+      damage: result.damage,
+      killed: result.killed,
+      targetHp: playerEntity.stats.currentHp,
+      targetMaxHp: playerEntity.stats.maxHp,
+    });
+
+    console.log(
+      `👹 ${monster.name} attacked ${targetPlayer.name} for ${result.damage} damage (${playerEntity.stats.currentHp}/${playerEntity.stats.maxHp} HP)`
+    );
+
+    // Reset attacking state after a short delay
+    setTimeout(() => {
+      monster.isAttacking = false;
+    }, 100);
   }
 
   updateMonsterMovement(monster: MonsterState, delta: number) {
@@ -341,6 +446,11 @@ export class WorldRoom extends Room<MapState> {
       return;
     }
 
+    // Stop player movement when attacking to prevent sliding past the target
+    player.dirX = 0;
+    player.dirY = 0;
+    player.dirZ = 0;
+
     const { targetId, targetType } = message; // targetType: "player" or "monster"
 
     // Update player entity position
@@ -386,6 +496,12 @@ export class WorldRoom extends Room<MapState> {
     if (targetType === "monster") {
       (targetState as MonsterState).currentHp = targetEntity.stats.currentHp;
       (targetState as MonsterState).isDead = targetEntity.isDead;
+
+      // Set monster aggro to attacker (monster will fight back)
+      if (!targetEntity.isDead) {
+        this.monsterAggro.set(targetId, client.sessionId);
+        (targetState as MonsterState).targetId = client.sessionId;
+      }
     } else {
       (targetState as PlayerState).currentHp = targetEntity.stats.currentHp;
     }
@@ -412,6 +528,9 @@ export class WorldRoom extends Room<MapState> {
 
     // Handle monster death and respawn
     if (result.killed && targetType === "monster") {
+      // Clear monster aggro on death
+      this.monsterAggro.delete(targetId);
+
       setTimeout(() => {
         this.handleMonsterRespawn(targetId);
       }, (targetEntity as MonsterEntity).respawnTime * 1000);
