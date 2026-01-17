@@ -12,6 +12,7 @@ export class PlayerState extends Schema {
   @type("int32") last_processed_input: number = 0;
   @type("int32") currentHp: number = 100;
   @type("int32") maxHp: number = 100;
+  @type("float32") walkSpeed: number = 5.0;
 
   // Combat stats
   @type("int32") baseDamage: number = 10;

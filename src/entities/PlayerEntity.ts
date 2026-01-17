@@ -21,6 +21,7 @@ export class PlayerEntity extends BaseEntity {
       baseDamage: 10,
       attackSpeed: 2.0, // 2 attacks per second (0.5s cooldown)
       attackRange: 2.0, // melee range
+      walkSpeed: 5.0,
       defense: 0,
       damageMultiplier: 1.0,
       damageReduction: 0,

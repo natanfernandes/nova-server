@@ -12,6 +12,7 @@ export interface CombatStats {
   defense: number;
   damageMultiplier: number; // percentage multiplier (1.0 = 100%)
   damageReduction: number; // percentage reduction (0.1 = 10% reduction)
+  walkSpeed: number;
 }
 
 export interface Position {
