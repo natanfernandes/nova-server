@@ -404,6 +404,13 @@ export class WorldRoom extends Room<MapState> {
       return;
     }
 
+    // Stop movement if already in attack range (prevents sliding past target)
+    // Keep moving if out of range (player still chasing)
+    const distance = playerEntity.distanceTo(targetEntity);
+    if (distance <= playerEntity.stats.attackRange) {
+      playerEntity.stopMovement();
+    }
+
     // Entity handles all attack logic (range, cooldown, damage)
     const result = playerEntity.attack(targetEntity, Date.now());
 
@@ -414,9 +421,6 @@ export class WorldRoom extends Room<MapState> {
       });
       return;
     }
-
-    // Attack succeeded — stop movement now (fixes auto-attack chase bug)
-    playerEntity.stopMovement();
 
     // Set monster aggro to attacker (monster will fight back)
     if (targetType === "monster" && !targetEntity.isDead) {
