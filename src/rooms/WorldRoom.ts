@@ -22,7 +22,6 @@ import {
 import { CollisionShape } from "../utils/obstacles";
 import { PlayerEntity } from "../entities/PlayerEntity";
 import { MonsterEntity } from "../entities/MonsterEntity";
-import { CombatManager } from "../systems/CombatManager";
 
 // TODO: just check collision in nearby area instead of whole map
 export class WorldRoom extends Room<MapState> {
@@ -40,8 +39,6 @@ export class WorldRoom extends Room<MapState> {
   // Collision system
   collisionManager: CollisionManager;
 
-  // Combat system
-  combatManager: CombatManager;
 
   // Entity management (source of truth for all game state)
   playerEntities: Map<string, PlayerEntity> = new Map(); // sessionId -> PlayerEntity
@@ -76,9 +73,6 @@ export class WorldRoom extends Room<MapState> {
 
     // Initialize collision system
     this.collisionManager = new CollisionManager(allCollisions, this.PLAYER_RADIUS);
-
-    // Initialize combat system
-    this.combatManager = new CombatManager();
 
     console.log(`✅ Loaded ${obstacleCollisions.length} obstacles with collision`);
 
@@ -299,7 +293,7 @@ export class WorldRoom extends Room<MapState> {
     if (distance <= monster.stats.attackRange) {
       console.log(`👹 ${monster.name} in range (${distance.toFixed(2)} <= ${monster.stats.attackRange}), attempting attack`);
       monster.stopMovement();
-      this.tryMonsterAttack(monster, targetEntity, targetSessionId);
+      this.tryMonsterAttack(monster, targetEntity);
     } else {
       // Chase the player
       monster.dirX = dirX;
@@ -332,22 +326,13 @@ export class WorldRoom extends Room<MapState> {
     }
   }
 
-  tryMonsterAttack(monster: MonsterEntity, targetPlayer: PlayerEntity, _targetSessionId: string) {
-    // No position sync needed - entities already have authoritative positions
-    const result = this.combatManager.processAttack(
-      monster,
-      targetPlayer,
-      Date.now()
-    );
+  tryMonsterAttack(monster: MonsterEntity, targetPlayer: PlayerEntity) {
+    const result = monster.attack(targetPlayer, Date.now());
 
     if (!result.success) {
       console.log(`👹 Monster attack failed: ${result.reason}`);
       return;
     }
-
-    // Set monster attacking state on entity (will be synced to schema)
-    monster.isAttacking = true;
-    monster.targetId = targetPlayer.id;
 
     // Broadcast monster attack to all clients
     this.broadcast("monster_attacked", {
@@ -403,9 +388,6 @@ export class WorldRoom extends Room<MapState> {
       return;
     }
 
-    // Stop player movement when attacking
-    playerEntity.stopMovement();
-
     const { targetId, targetType } = message; // targetType: "player" or "monster"
 
     let targetEntity: PlayerEntity | MonsterEntity | undefined;
@@ -422,15 +404,10 @@ export class WorldRoom extends Room<MapState> {
       return;
     }
 
-    // Process attack through combat manager
-    const result = this.combatManager.processAttack(
-      playerEntity,
-      targetEntity,
-      Date.now()
-    );
+    // Entity handles all attack logic (range, cooldown, damage)
+    const result = playerEntity.attack(targetEntity, Date.now());
 
     if (!result.success) {
-      // Send failure message to attacker only
       this.send(client, "attack_failed", {
         reason: result.reason,
         targetId: targetId,
@@ -438,15 +415,14 @@ export class WorldRoom extends Room<MapState> {
       return;
     }
 
+    // Attack succeeded — stop movement now (fixes auto-attack chase bug)
+    playerEntity.stopMovement();
+
     // Set monster aggro to attacker (monster will fight back)
     if (targetType === "monster" && !targetEntity.isDead) {
       this.monsterAggro.set(targetId, client.sessionId);
       targetEntity.targetId = client.sessionId;
     }
-
-    // Set attacking state on entity (will be synced to schema)
-    playerEntity.isAttacking = true;
-    playerEntity.targetId = targetId;
 
     // Broadcast attack to all clients
     this.broadcast("player_attacked", {
@@ -466,7 +442,6 @@ export class WorldRoom extends Room<MapState> {
 
     // Handle monster death and respawn
     if (result.killed && targetType === "monster") {
-      // Clear monster aggro on death
       this.monsterAggro.delete(targetId);
 
       setTimeout(() => {
@@ -494,17 +469,7 @@ export class WorldRoom extends Room<MapState> {
 
     const { skillId, targetId, targetType } = message;
 
-    // Get skill configuration
-    const skillConfig = this.getSkillConfig(skillId);
-    if (!skillConfig) {
-      this.send(client, "skill_failed", {
-        reason: "Unknown skill",
-        skillId: skillId,
-      });
-      return;
-    }
-
-    // Find target if skill requires one
+    // Find target entity
     let targetEntity: PlayerEntity | MonsterEntity | null = null;
 
     if (targetType === "monster" && targetId) {
@@ -513,49 +478,16 @@ export class WorldRoom extends Room<MapState> {
       targetEntity = this.playerEntities.get(targetId) || null;
     }
 
-    // Validate target exists for targeted skills
-    if (skillConfig.requiresTarget && !targetEntity) {
+    // Entity handles all skill logic (lookup, range, damage)
+    const result = playerEntity.useSkill(skillId, targetEntity, Date.now());
+
+    if (!result.success) {
       this.send(client, "skill_failed", {
-        reason: "Invalid target",
+        reason: result.reason,
         skillId: skillId,
       });
       return;
     }
-
-    // Check range
-    if (targetEntity && skillConfig.range > 0) {
-      const distance = playerEntity.distanceTo(targetEntity);
-      if (distance > skillConfig.range) {
-        this.send(client, "skill_failed", {
-          reason: "Out of range",
-          skillId: skillId,
-        });
-        return;
-      }
-    }
-
-    // Check if target is dead
-    if (targetEntity && targetEntity.isDead) {
-      this.send(client, "skill_failed", {
-        reason: "Target is dead",
-        skillId: skillId,
-      });
-      return;
-    }
-
-    // Calculate and apply damage
-    let damage = 0;
-    let killed = false;
-
-    if (skillConfig.damage > 0 && targetEntity) {
-      damage = Math.floor(skillConfig.damage * playerEntity.stats.damageMultiplier);
-      targetEntity.takeDamage(damage);
-      killed = targetEntity.isDead;
-    }
-
-    // Set attacking state on entity (will be synced to schema)
-    playerEntity.isAttacking = true;
-    playerEntity.targetId = targetId || "";
 
     // Broadcast skill to all clients
     this.broadcast("skill_used", {
@@ -564,18 +496,20 @@ export class WorldRoom extends Room<MapState> {
       skillId: skillId,
       targetId: targetId,
       targetType: targetType,
-      damage: damage,
-      killed: killed,
+      damage: result.damage,
+      killed: result.killed,
       targetHp: targetEntity?.stats.currentHp ?? 0,
       targetMaxHp: targetEntity?.stats.maxHp ?? 0,
     });
 
     console.log(
-      `✨ ${playerEntity.name} used ${skillId} on ${targetEntity?.name || "no target"} for ${damage} damage`
+      `✨ ${playerEntity.name} used ${skillId} on ${targetEntity?.name || "no target"} for ${result.damage} damage`
     );
 
     // Handle monster death and respawn
-    if (killed && targetType === "monster" && targetEntity) {
+    if (result.killed && targetType === "monster" && targetEntity) {
+      this.monsterAggro.delete(targetId);
+
       setTimeout(() => {
         this.handleMonsterRespawn(targetId);
       }, (targetEntity as MonsterEntity).respawnTime * 1000);
@@ -589,22 +523,6 @@ export class WorldRoom extends Room<MapState> {
   }
 
   /**
-   * Get skill configuration by ID
-   */
-  getSkillConfig(skillId: string): { damage: number; range: number; requiresTarget: boolean } | null {
-    const skills: Record<string, { damage: number; range: number; requiresTarget: boolean }> = {
-      fireball: {
-        damage: 25,
-        range: 5.0,
-        requiresTarget: true,
-      },
-      // Add more skills here
-    };
-
-    return skills[skillId] || null;
-  }
-
-  /**
    * Handle monster respawn
    */
   handleMonsterRespawn(monsterId: string) {
@@ -612,6 +530,10 @@ export class WorldRoom extends Room<MapState> {
     if (!monsterEntity) return;
 
     monsterEntity.respawn();
+
+    // Clear any leftover aggro so monster doesn't immediately chase a player
+    this.monsterAggro.delete(monsterId);
+    this.monsterAITimers.delete(monsterId);
 
     // Immediate sync needed because this runs in setTimeout (outside tick loop)
     const monsterState = this.state.monsters.get(monsterId);

@@ -1,5 +1,15 @@
-import { BaseEntity, CombatStats, Position } from "./BaseEntity";
+import { BaseEntity, CombatStats, Position, AttackResult } from "./BaseEntity";
 import { PlayerState } from "../schema/Player";
+
+export interface SkillConfig {
+  damage: number;
+  range: number;
+  requiresTarget: boolean;
+}
+
+export interface SkillResult extends AttackResult {
+  skillId: string;
+}
 
 /**
  * Player Entity
@@ -8,6 +18,10 @@ import { PlayerState } from "../schema/Player";
 export class PlayerEntity extends BaseEntity {
   public sessionId: string; // Colyseus client session ID
   public lastProcessedInput: number = 0;
+
+  private skills: Map<string, SkillConfig> = new Map([
+    ["fireball", { damage: 25, range: 5.0, requiresTarget: true }],
+  ]);
 
   constructor(
     id: string,
@@ -65,6 +79,53 @@ export class PlayerEntity extends BaseEntity {
     // Combat UI state
     schema.isAttacking = this.isAttacking;
     schema.targetId = this.targetId;
+  }
+
+  public getSkill(skillId: string): SkillConfig | undefined {
+    return this.skills.get(skillId);
+  }
+
+  /**
+   * Use a skill against an optional target. Validates skill, range, and applies damage.
+   */
+  public useSkill(skillId: string, target: BaseEntity | null, _currentTime: number): SkillResult {
+    const skill = this.skills.get(skillId);
+    if (!skill) {
+      return { success: false, damage: 0, killed: false, skillId, reason: "Unknown skill" };
+    }
+
+    if (skill.requiresTarget && !target) {
+      return { success: false, damage: 0, killed: false, skillId, reason: "Invalid target" };
+    }
+
+    if (target) {
+      if (target.isDead) {
+        return { success: false, damage: 0, killed: false, skillId, reason: "Target is dead" };
+      }
+
+      if (skill.range > 0) {
+        const distance = this.distanceTo(target);
+        if (distance > skill.range) {
+          return { success: false, damage: 0, killed: false, skillId, reason: "Out of range" };
+        }
+      }
+    }
+
+    // Calculate and apply damage
+    let damage = 0;
+    let killed = false;
+
+    if (skill.damage > 0 && target) {
+      damage = Math.floor(skill.damage * this.stats.damageMultiplier);
+      target.takeDamage(damage);
+      killed = target.isDead;
+    }
+
+    // Set combat UI state
+    this.isAttacking = true;
+    this.targetId = target?.id || "";
+
+    return { success: true, damage, killed, skillId };
   }
 
   /**

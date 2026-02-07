@@ -28,6 +28,13 @@ export interface Positionable {
   z: number;
 }
 
+export interface AttackResult {
+  success: boolean;
+  damage: number;
+  killed: boolean;
+  reason?: string;
+}
+
 export abstract class BaseEntity {
   public id: string;
   public name: string;
@@ -172,6 +179,42 @@ export abstract class BaseEntity {
     this.stats.currentHp = this.stats.maxHp;
     this.isDead = false;
     this.lastAttackTime = 0;
+    this.isAttacking = false;
+    this.targetId = "";
+    this.stopMovement();
+  }
+
+  /**
+   * Perform an attack against a target. Validates range, cooldown, and applies damage.
+   */
+  public attack(target: BaseEntity, currentTime: number): AttackResult {
+    if (this.isDead) {
+      return { success: false, damage: 0, killed: false, reason: "Attacker is dead" };
+    }
+    if (target.isDead) {
+      return { success: false, damage: 0, killed: false, reason: "Target is already dead" };
+    }
+    if (!this.canAttack(currentTime)) {
+      const cooldown = 1000 / this.stats.attackSpeed;
+      const timeLeft = cooldown - (currentTime - this.lastAttackTime);
+      return { success: false, damage: 0, killed: false, reason: `Attack on cooldown (${Math.ceil(timeLeft)}ms remaining)` };
+    }
+
+    const distance = this.distanceTo(target);
+    if (distance > this.stats.attackRange) {
+      return { success: false, damage: 0, killed: false, reason: `Target out of range (${distance.toFixed(2)} > ${this.stats.attackRange})` };
+    }
+
+    // Execute attack
+    const damage = this.calculateDamage();
+    const actualDamage = target.takeDamage(damage);
+    this.registerAttack(currentTime);
+
+    // Set combat UI state
+    this.isAttacking = true;
+    this.targetId = target.id;
+
+    return { success: true, damage: actualDamage, killed: target.isDead };
   }
 
   /**
