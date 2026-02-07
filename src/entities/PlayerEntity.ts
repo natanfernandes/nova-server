@@ -1,4 +1,5 @@
 import { BaseEntity, CombatStats, Position } from "./BaseEntity";
+import { PlayerState } from "../schema/Player";
 
 /**
  * Player Entity
@@ -6,6 +7,7 @@ import { BaseEntity, CombatStats, Position } from "./BaseEntity";
  */
 export class PlayerEntity extends BaseEntity {
   public sessionId: string; // Colyseus client session ID
+  public lastProcessedInput: number = 0;
 
   constructor(
     id: string,
@@ -29,6 +31,40 @@ export class PlayerEntity extends BaseEntity {
 
     super(id, name, position, { ...defaultStats, ...stats });
     this.sessionId = sessionId;
+  }
+
+  /**
+   * Sync all entity state to the Colyseus schema for network replication.
+   * Does NOT overwrite id/name (immutable after creation).
+   */
+  public syncToSchema(schema: PlayerState): void {
+    // Position
+    schema.x = this.position.x;
+    schema.y = this.position.y;
+    schema.z = this.position.z;
+
+    // Direction
+    schema.dirX = this.dirX;
+    schema.dirY = this.dirY;
+    schema.dirZ = this.dirZ;
+
+    // Input sequence
+    schema.last_processed_input = this.lastProcessedInput;
+
+    // Combat stats
+    schema.currentHp = this.stats.currentHp;
+    schema.maxHp = this.stats.maxHp;
+    schema.walkSpeed = this.stats.walkSpeed;
+    schema.baseDamage = this.stats.baseDamage;
+    schema.attackSpeed = this.stats.attackSpeed;
+    schema.attackRange = this.stats.attackRange;
+    schema.defense = this.stats.defense;
+    schema.damageMultiplier = this.stats.damageMultiplier;
+    schema.damageReduction = this.stats.damageReduction;
+
+    // Combat UI state
+    schema.isAttacking = this.isAttacking;
+    schema.targetId = this.targetId;
   }
 
   /**

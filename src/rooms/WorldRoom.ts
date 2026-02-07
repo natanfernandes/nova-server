@@ -8,10 +8,7 @@ import { MonsterState } from "../schema/Monster";
 import { CollisionManager } from "../systems/CollisionManager";
 import { MAP_OBSTACLES } from "../config/mapCollisions";
 import {
-  isMoving,
   getRandomDirection,
-  calculateNewPosition,
-  stopMovement,
   shouldDoAction,
   getRandomInterval,
   getDirectionToTarget,
@@ -27,7 +24,6 @@ import { PlayerEntity } from "../entities/PlayerEntity";
 import { MonsterEntity } from "../entities/MonsterEntity";
 import { CombatManager } from "../systems/CombatManager";
 
-// TODO: better integration with entity and schema (entity controls and reply on schema)
 // TODO: just check collision in nearby area instead of whole map
 export class WorldRoom extends Room<MapState> {
   maxClients = 100;
@@ -47,7 +43,7 @@ export class WorldRoom extends Room<MapState> {
   // Combat system
   combatManager: CombatManager;
 
-  // Entity management (server-side combat logic)
+  // Entity management (source of truth for all game state)
   playerEntities: Map<string, PlayerEntity> = new Map(); // sessionId -> PlayerEntity
   monsterEntities: Map<string, MonsterEntity> = new Map();
 
@@ -92,46 +88,35 @@ export class WorldRoom extends Room<MapState> {
 
     this.onMessage("*", (client: Client, type: string|number, message: any) => {
         console.log(client.sessionId, "sent 'action' message: ", message);
-          const player = this.state.players.get(client.sessionId);
-          const playerEntity = this.playerEntities.get(client.sessionId);
+        const playerEntity = this.playerEntities.get(client.sessionId);
 
-          switch (type) {
-            //TODO: better handle movement update with method
-            case "move":
-              if (!player) return;
-              const [dx, dy, dz] = message.dir;
-              // Always update direction, even if it's zero (stopped)
-              player.dirX = dx;
-              player.dirY = dy;
-              player.dirZ = dz;
-              player.last_processed_input = message.seq;
+        switch (type) {
+          case "move":
+            if (!playerEntity) return;
+            const [dx, dy, dz] = message.dir;
+            playerEntity.setDirection(dx, dy, dz);
+            playerEntity.lastProcessedInput = message.seq;
 
-              // Update entity position
-              if (playerEntity) {
-                playerEntity.setPosition(player.x, player.y, player.z);
-              }
+            if (dx !== 0 || dy !== 0 || dz !== 0) {
+              console.log(`Player ${playerEntity.name} is moving to direction:`, dx, dy, dz);
+            } else {
+              console.log(`Player ${playerEntity.name} stopped moving`);
+            }
+            break;
 
-              if (dx !== 0 || dy !== 0 || dz !== 0) {
-                console.log(`Player ${player.name} is moving to direction:`, dx, dy, dz);
-              } else {
-                console.log(`Player ${player.name} stopped moving`);
-              }
-              break;
+          case "attack":
+            this.handlePlayerAttack(client, message);
+            break;
 
-            case "attack":
-              this.handlePlayerAttack(client, message);
-              break;
+          case "skill":
+            this.handlePlayerSkill(client, message);
+            break;
 
-            case "skill":
-              this.handlePlayerSkill(client, message);
-              break;
-              //TODO: better handleing of damage and die check
-            case "damage":
-              if (!player) return;
-              player.currentHp -= message.amount;
-              if (player.currentHp < 0) player.currentHp = 0;
-              break;
-          }
+          case "damage":
+            if (!playerEntity) return;
+            playerEntity.takeDamage(message.amount);
+            break;
+        }
     });
   }
 
@@ -169,9 +154,7 @@ export class WorldRoom extends Room<MapState> {
 
     monsterEntries.forEach(([_monsterKey, monsterData]) => {
       for (let i = 0; i < monsterData.quantity; i++) {
-        const monster = new MonsterState();
-        monster.id = `${monsterData.name}_${i}`;
-        monster.name = monsterData.name;
+        const monsterId = `${monsterData.name}_${i}`;
 
         // Find safe spawn position for monster using map boundaries
         const spawnPos = this.collisionManager.findSafeSpawnPosition(
@@ -179,27 +162,16 @@ export class WorldRoom extends Room<MapState> {
           this.MAP_BOUNDARIES.maxX,
           this.MAP_BOUNDARIES.minZ,
           this.MAP_BOUNDARIES.maxZ,
-          this.state.players.values()
+          this.playerEntities.values()
         );
 
-        if (spawnPos) {
-          monster.x = spawnPos.x;
-          monster.z = spawnPos.z;
-        } else {
-          // Fallback to random position in map if safe spawn fails
-          const randomPos = getRandomPositionInMap(this.MAP_BOUNDARIES);
-          monster.x = randomPos.x;
-          monster.z = randomPos.z;
-        }
-        monster.y = 1; // Ground level
+        const pos = spawnPos || getRandomPositionInMap(this.MAP_BOUNDARIES);
 
-        this.state.monsters.set(monster.id, monster);
-
-        // Create monster entity for combat system
+        // Create entity first (source of truth)
         const monsterEntity = new MonsterEntity(
-          monster.id,
-          monster.name,
-          { x: monster.x, y: monster.y, z: monster.z },
+          monsterId,
+          monsterData.name,
+          { x: pos.x, y: 1, z: pos.z },
           {
             maxHp: monsterData.maxHp || 50,
             baseDamage: monsterData.attack || 5,
@@ -209,88 +181,100 @@ export class WorldRoom extends Room<MapState> {
             respawnTime: 30
           }
         );
+        this.monsterEntities.set(monsterId, monsterEntity);
 
-        this.monsterEntities.set(monster.id, monsterEntity);
-
-        // Sync stats to schema
-        monster.maxHp = monsterEntity.stats.maxHp;
-        monster.currentHp = monsterEntity.stats.currentHp;
-        monster.baseDamage = monsterEntity.stats.baseDamage;
-        monster.attackSpeed = monsterEntity.stats.attackSpeed;
-        monster.attackRange = monsterEntity.stats.attackRange;
-        monster.defense = monsterEntity.stats.defense;
+        // Create schema and sync from entity
+        const monster = new MonsterState();
+        monster.id = monsterId;
+        monster.name = monsterData.name;
+        monsterEntity.syncToSchema(monster);
+        this.state.monsters.set(monsterId, monster);
       }
     });
   }
-  
- update(delta: number) {
-    // Update players
-    for (const player of this.state.players.values()) {
-      if (isMoving(player.dirX, player.dirY, player.dirZ)) {
-        this.updatePlayerMovement(player, delta);
+
+  update(delta: number) {
+    // 1. Update player entities (movement)
+    for (const entity of this.playerEntities.values()) {
+      if (entity.isMoving()) {
+        this.updatePlayerMovement(entity, delta);
       }
     }
 
-    // Update monsters (AI-controlled)
+    // 2. Update monsters (AI + movement on entities)
     this.updateMonsterAI(delta);
+
+    // 3. Sync all entities to schemas (single pass per tick)
+    this.syncAllEntitiesToSchemas();
   }
 
-  updatePlayerMovement(player: PlayerState, delta: number) {
-    // Calculate new position
-    const { newX, newZ } = calculateNewPosition(
-      player.x,
-      player.z,
-      player.dirX,
-      player.dirZ,
-      this.SPEED,
-      delta
-    );
+  /**
+   * Sync all entity state to their corresponding schemas for network replication.
+   * Called once per tick after all entity updates are complete.
+   */
+  syncAllEntitiesToSchemas() {
+    for (const [sessionId, entity] of this.playerEntities) {
+      const schema = this.state.players.get(sessionId);
+      if (schema) {
+        entity.syncToSchema(schema);
+      }
+    }
+
+    for (const [monsterId, entity] of this.monsterEntities) {
+      const schema = this.state.monsters.get(monsterId);
+      if (schema) {
+        entity.syncToSchema(schema);
+      }
+    }
+  }
+
+  updatePlayerMovement(entity: PlayerEntity, delta: number) {
+    const { newX, newZ } = entity.calculateMovement(this.SPEED, delta);
 
     // Try to move with collision sliding
     const slideResult = this.collisionManager.trySlideMovement(
-      player.x,
-      player.z,
+      entity.position.x,
+      entity.position.z,
       newX,
       newZ,
-      player,
-      this.state.players.values()
+      entity,
+      this.playerEntities.values()
     );
 
-    // Update player position (may be slid along walls)
-    player.x = slideResult.x;
-    player.z = slideResult.z;
+    // Update entity position (may be slid along walls)
+    entity.setPosition(slideResult.x, entity.position.y, slideResult.z);
 
     // Y movement (jumping, etc.) - no collision check for now
-    if (player.dirY !== 0) {
-      player.y += player.dirY * this.SPEED * delta;
+    if (entity.dirY !== 0) {
+      entity.position.y += entity.dirY * this.SPEED * delta;
     }
   }
 
   updateMonsterAI(delta: number) {
-    for (const monster of this.state.monsters.values()) {
-      if (monster.isDead) continue;
+    for (const [monsterId, entity] of this.monsterEntities) {
+      if (entity.isDead) continue;
 
       // Check if monster has aggro target
-      const targetSessionId = this.monsterAggro.get(monster.id);
+      const targetSessionId = this.monsterAggro.get(monsterId);
       if (targetSessionId) {
-        this.updateMonsterCombatAI(monster, targetSessionId, delta);
+        this.updateMonsterCombatAI(entity, targetSessionId, delta);
       } else {
         // No aggro - wander behavior
-        this.updateMonsterWanderAI(monster, delta);
+        this.updateMonsterWanderAI(entity, delta);
       }
 
       // Move monster if it has direction
-      if (isMoving(monster.dirX, 0, monster.dirZ)) {
-        this.updateMonsterMovement(monster, delta);
+      if (entity.isMoving()) {
+        this.updateMonsterMovement(entity, delta);
       }
     }
   }
 
-  updateMonsterCombatAI(monster: MonsterState, targetSessionId: string, delta: number) {
-    const targetPlayer = this.state.players.get(targetSessionId);
+  updateMonsterCombatAI(monster: MonsterEntity, targetSessionId: string, _delta: number) {
+    const targetEntity = this.playerEntities.get(targetSessionId);
 
     // Clear aggro if target is gone or dead
-    if (!targetPlayer || targetPlayer.currentHp <= 0) {
+    if (!targetEntity || targetEntity.isDead) {
       this.monsterAggro.delete(monster.id);
       monster.targetId = "";
       return;
@@ -298,8 +282,8 @@ export class WorldRoom extends Room<MapState> {
 
     // Calculate direction and distance to player
     const { dirX, dirZ, distance } = getDirectionToTarget(
-      monster.x, monster.z,
-      targetPlayer.x, targetPlayer.z
+      monster.position.x, monster.position.z,
+      targetEntity.position.x, targetEntity.position.z
     );
 
     // If player is too far, drop aggro (leash distance)
@@ -307,17 +291,15 @@ export class WorldRoom extends Room<MapState> {
     if (distance > LEASH_DISTANCE) {
       this.monsterAggro.delete(monster.id);
       monster.targetId = "";
-      monster.dirX = 0;
-      monster.dirZ = 0;
+      monster.stopMovement();
       return;
     }
 
     // If in attack range, stop and attack
-    if (distance <= monster.attackRange) {
-      console.log(`👹 ${monster.name} in range (${distance.toFixed(2)} <= ${monster.attackRange}), attempting attack`);
-      monster.dirX = 0;
-      monster.dirZ = 0;
-      this.tryMonsterAttack(monster, targetPlayer, targetSessionId);
+    if (distance <= monster.stats.attackRange) {
+      console.log(`👹 ${monster.name} in range (${distance.toFixed(2)} <= ${monster.stats.attackRange}), attempting attack`);
+      monster.stopMovement();
+      this.tryMonsterAttack(monster, targetEntity, targetSessionId);
     } else {
       // Chase the player
       monster.dirX = dirX;
@@ -325,7 +307,7 @@ export class WorldRoom extends Room<MapState> {
     }
   }
 
-  updateMonsterWanderAI(monster: MonsterState, delta: number) {
+  updateMonsterWanderAI(monster: MonsterEntity, delta: number) {
     // Get or initialize timer for this monster
     let timer = this.monsterAITimers.get(monster.id) || 0;
     timer -= delta;
@@ -339,9 +321,7 @@ export class WorldRoom extends Room<MapState> {
         monster.dirZ = direction.dirZ;
       } else {
         // 30% chance to stop
-        const stop = stopMovement();
-        monster.dirX = stop.dirX;
-        monster.dirZ = stop.dirZ;
+        monster.stopMovement();
       }
 
       // Reset timer (2-5 seconds)
@@ -352,23 +332,11 @@ export class WorldRoom extends Room<MapState> {
     }
   }
 
-  tryMonsterAttack(monster: MonsterState, targetPlayer: PlayerState, targetSessionId: string) {
-    const monsterEntity = this.monsterEntities.get(monster.id);
-    const playerEntity = this.playerEntities.get(targetSessionId);
-
-    if (!monsterEntity || !playerEntity) {
-      console.log(`👹 tryMonsterAttack failed: entities not found - monster: ${!!monsterEntity}, player: ${!!playerEntity}`);
-      return;
-    }
-
-    // Update positions for combat calculation
-    monsterEntity.setPosition(monster.x, monster.y, monster.z);
-    playerEntity.setPosition(targetPlayer.x, targetPlayer.y, targetPlayer.z);
-
-    // Process attack through combat manager (handles cooldown internally via entity.canAttack)
+  tryMonsterAttack(monster: MonsterEntity, targetPlayer: PlayerEntity, _targetSessionId: string) {
+    // No position sync needed - entities already have authoritative positions
     const result = this.combatManager.processAttack(
-      monsterEntity,
-      playerEntity,
+      monster,
+      targetPlayer,
       Date.now()
     );
 
@@ -377,10 +345,7 @@ export class WorldRoom extends Room<MapState> {
       return;
     }
 
-    // Update player HP in schema
-    targetPlayer.currentHp = playerEntity.stats.currentHp;
-
-    // Set monster attacking state
+    // Set monster attacking state on entity (will be synced to schema)
     monster.isAttacking = true;
     monster.targetId = targetPlayer.id;
 
@@ -392,12 +357,12 @@ export class WorldRoom extends Room<MapState> {
       targetName: targetPlayer.name,
       damage: result.damage,
       killed: result.killed,
-      targetHp: playerEntity.stats.currentHp,
-      targetMaxHp: playerEntity.stats.maxHp,
+      targetHp: targetPlayer.stats.currentHp,
+      targetMaxHp: targetPlayer.stats.maxHp,
     });
 
     console.log(
-      `👹 ${monster.name} attacked ${targetPlayer.name} for ${result.damage} damage (${playerEntity.stats.currentHp}/${playerEntity.stats.maxHp} HP)`
+      `👹 ${monster.name} attacked ${targetPlayer.name} for ${result.damage} damage (${targetPlayer.stats.currentHp}/${targetPlayer.stats.maxHp} HP)`
     );
 
     // Reset attacking state after a short delay
@@ -406,34 +371,23 @@ export class WorldRoom extends Room<MapState> {
     }, 100);
   }
 
-  updateMonsterMovement(monster: MonsterState, delta: number) {
-    // Calculate new position
-    const { newX, newZ } = calculateNewPosition(
-      monster.x,
-      monster.z,
-      monster.dirX,
-      monster.dirZ,
-      this.MONSTER_SPEED,
-      delta
-    );
+  updateMonsterMovement(monster: MonsterEntity, delta: number) {
+    const { newX, newZ } = monster.calculateMovement(this.MONSTER_SPEED, delta);
 
     // Try to move with collision sliding
     const slideResult = this.collisionManager.trySlideMovement(
-      monster.x,
-      monster.z,
+      monster.position.x,
+      monster.position.z,
       newX,
       newZ
     );
 
-    // Update monster position (may be slid along walls)
-    monster.x = slideResult.x;
-    monster.z = slideResult.z;
+    // Update monster entity position (may be slid along walls)
+    monster.setPosition(slideResult.x, monster.position.y, slideResult.z);
 
     // If monster is completely blocked, force new direction next tick
-    if (slideResult.collided && slideResult.x === monster.x && slideResult.z === monster.z) {
-      const stop = stopMovement();
-      monster.dirX = stop.dirX;
-      monster.dirZ = stop.dirZ;
+    if (slideResult.collided && slideResult.x === monster.position.x && slideResult.z === monster.position.z) {
+      monster.stopMovement();
       this.monsterAITimers.set(monster.id, 0); // Force new direction next tick
     }
   }
@@ -442,43 +396,31 @@ export class WorldRoom extends Room<MapState> {
    * Handle player attack request
    */
   handlePlayerAttack(client: Client, message: any) {
-    const player = this.state.players.get(client.sessionId);
     const playerEntity = this.playerEntities.get(client.sessionId);
 
-    if (!player || !playerEntity) {
+    if (!playerEntity) {
       console.log(`⚠️ Attack failed: Player not found`);
       return;
     }
 
-    // Stop player movement when attacking to prevent sliding past the target
-    player.dirX = 0;
-    player.dirY = 0;
-    player.dirZ = 0;
+    // Stop player movement when attacking
+    playerEntity.stopMovement();
 
     const { targetId, targetType } = message; // targetType: "player" or "monster"
 
-    // Update player entity position
-    playerEntity.setPosition(player.x, player.y, player.z);
-
-    let targetEntity;
-    let targetState;
+    let targetEntity: PlayerEntity | MonsterEntity | undefined;
 
     // Find target entity
     if (targetType === "monster") {
       targetEntity = this.monsterEntities.get(targetId);
-      targetState = this.state.monsters.get(targetId);
     } else if (targetType === "player") {
       targetEntity = this.playerEntities.get(targetId);
-      targetState = this.state.players.get(targetId);
     }
 
-    if (!targetEntity || !targetState) {
+    if (!targetEntity) {
       console.log(`⚠️ Attack failed: Target not found (${targetId})`);
       return;
     }
-
-    // Update target entity position
-    targetEntity.setPosition(targetState.x, targetState.y, targetState.z);
 
     // Process attack through combat manager
     const result = this.combatManager.processAttack(
@@ -496,28 +438,20 @@ export class WorldRoom extends Room<MapState> {
       return;
     }
 
-    // Update target HP in schema
-    if (targetType === "monster") {
-      (targetState as MonsterState).currentHp = targetEntity.stats.currentHp;
-      (targetState as MonsterState).isDead = targetEntity.isDead;
-
-      // Set monster aggro to attacker (monster will fight back)
-      if (!targetEntity.isDead) {
-        this.monsterAggro.set(targetId, client.sessionId);
-        (targetState as MonsterState).targetId = client.sessionId;
-      }
-    } else {
-      (targetState as PlayerState).currentHp = targetEntity.stats.currentHp;
+    // Set monster aggro to attacker (monster will fight back)
+    if (targetType === "monster" && !targetEntity.isDead) {
+      this.monsterAggro.set(targetId, client.sessionId);
+      targetEntity.targetId = client.sessionId;
     }
 
-    // Set attacking state
-    player.isAttacking = true;
-    player.targetId = targetId;
+    // Set attacking state on entity (will be synced to schema)
+    playerEntity.isAttacking = true;
+    playerEntity.targetId = targetId;
 
     // Broadcast attack to all clients
     this.broadcast("player_attacked", {
       attackerId: client.sessionId,
-      attackerName: player.name,
+      attackerName: playerEntity.name,
       targetId: targetId,
       targetType: targetType,
       damage: result.damage,
@@ -527,7 +461,7 @@ export class WorldRoom extends Room<MapState> {
     });
 
     console.log(
-      `⚔️ ${player.name} attacked ${targetState.name} for ${result.damage} damage (${targetEntity.stats.currentHp}/${targetEntity.stats.maxHp} HP)`
+      `⚔️ ${playerEntity.name} attacked ${targetEntity.name} for ${result.damage} damage (${targetEntity.stats.currentHp}/${targetEntity.stats.maxHp} HP)`
     );
 
     // Handle monster death and respawn
@@ -542,8 +476,8 @@ export class WorldRoom extends Room<MapState> {
 
     // Reset attacking state after a short delay
     setTimeout(() => {
-      player.isAttacking = false;
-      player.targetId = "";
+      playerEntity.isAttacking = false;
+      playerEntity.targetId = "";
     }, 100);
   }
 
@@ -551,18 +485,14 @@ export class WorldRoom extends Room<MapState> {
    * Handle player skill request
    */
   handlePlayerSkill(client: Client, message: any) {
-    const player = this.state.players.get(client.sessionId);
     const playerEntity = this.playerEntities.get(client.sessionId);
 
-    if (!player || !playerEntity) {
+    if (!playerEntity) {
       console.log(`⚠️ Skill failed: Player not found`);
       return;
     }
 
     const { skillId, targetId, targetType } = message;
-
-    // Update player entity position
-    playerEntity.setPosition(player.x, player.y, player.z);
 
     // Get skill configuration
     const skillConfig = this.getSkillConfig(skillId);
@@ -575,29 +505,21 @@ export class WorldRoom extends Room<MapState> {
     }
 
     // Find target if skill requires one
-    let targetEntity = null;
-    let targetState = null;
+    let targetEntity: PlayerEntity | MonsterEntity | null = null;
 
     if (targetType === "monster" && targetId) {
-      targetEntity = this.monsterEntities.get(targetId);
-      targetState = this.state.monsters.get(targetId);
+      targetEntity = this.monsterEntities.get(targetId) || null;
     } else if (targetType === "player" && targetId) {
-      targetEntity = this.playerEntities.get(targetId);
-      targetState = this.state.players.get(targetId);
+      targetEntity = this.playerEntities.get(targetId) || null;
     }
 
     // Validate target exists for targeted skills
-    if (skillConfig.requiresTarget && (!targetEntity || !targetState)) {
+    if (skillConfig.requiresTarget && !targetEntity) {
       this.send(client, "skill_failed", {
         reason: "Invalid target",
         skillId: skillId,
       });
       return;
-    }
-
-    // Update target position if exists
-    if (targetEntity && targetState) {
-      targetEntity.setPosition(targetState.x, targetState.y, targetState.z);
     }
 
     // Check range
@@ -629,24 +551,16 @@ export class WorldRoom extends Room<MapState> {
       damage = Math.floor(skillConfig.damage * playerEntity.stats.damageMultiplier);
       targetEntity.takeDamage(damage);
       killed = targetEntity.isDead;
-
-      // Update target HP in schema
-      if (targetType === "monster" && targetState) {
-        (targetState as MonsterState).currentHp = targetEntity.stats.currentHp;
-        (targetState as MonsterState).isDead = targetEntity.isDead;
-      } else if (targetState) {
-        (targetState as PlayerState).currentHp = targetEntity.stats.currentHp;
-      }
     }
 
-    // Set attacking state
-    player.isAttacking = true;
-    player.targetId = targetId || "";
+    // Set attacking state on entity (will be synced to schema)
+    playerEntity.isAttacking = true;
+    playerEntity.targetId = targetId || "";
 
     // Broadcast skill to all clients
     this.broadcast("skill_used", {
       playerId: client.sessionId,
-      playerName: player.name,
+      playerName: playerEntity.name,
       skillId: skillId,
       targetId: targetId,
       targetType: targetType,
@@ -657,7 +571,7 @@ export class WorldRoom extends Room<MapState> {
     });
 
     console.log(
-      `✨ ${player.name} used ${skillId} on ${targetState?.name || "no target"} for ${damage} damage`
+      `✨ ${playerEntity.name} used ${skillId} on ${targetEntity?.name || "no target"} for ${damage} damage`
     );
 
     // Handle monster death and respawn
@@ -669,8 +583,8 @@ export class WorldRoom extends Room<MapState> {
 
     // Reset attacking state after a short delay
     setTimeout(() => {
-      player.isAttacking = false;
-      player.targetId = "";
+      playerEntity.isAttacking = false;
+      playerEntity.targetId = "";
     }, 100);
   }
 
@@ -695,34 +609,31 @@ export class WorldRoom extends Room<MapState> {
    */
   handleMonsterRespawn(monsterId: string) {
     const monsterEntity = this.monsterEntities.get(monsterId);
-    const monsterState = this.state.monsters.get(monsterId);
-
-    if (!monsterEntity || !monsterState) return;
+    if (!monsterEntity) return;
 
     monsterEntity.respawn();
 
-    // Sync to schema
-    monsterState.x = monsterEntity.position.x;
-    monsterState.y = monsterEntity.position.y;
-    monsterState.z = monsterEntity.position.z;
-    monsterState.currentHp = monsterEntity.stats.currentHp;
-    monsterState.isDead = false;
+    // Immediate sync needed because this runs in setTimeout (outside tick loop)
+    const monsterState = this.state.monsters.get(monsterId);
+    if (monsterState) {
+      monsterEntity.syncToSchema(monsterState);
+    }
 
     // Broadcast respawn to all clients
     this.broadcast("monster_respawned", {
       monsterId: monsterId,
-      x: monsterState.x,
-      y: monsterState.y,
-      z: monsterState.z,
+      x: monsterEntity.position.x,
+      y: monsterEntity.position.y,
+      z: monsterEntity.position.z,
     });
 
-    console.log(`🔄 Monster ${monsterState.name} respawned`);
+    console.log(`🔄 Monster ${monsterEntity.name} respawned`);
   }
 
   async onJoin(client: Client, options: any) {
     const playerName = options.name || `Player_${client.sessionId.slice(0, 4)}`;
-    
-    // tenta carregar player do banco ou cria novo
+
+    // Load player from database or create new
     let player = await prisma.player.findUnique({
       where: { id: playerName },
     });
@@ -742,18 +653,7 @@ export class WorldRoom extends Room<MapState> {
       });
     }
 
-    const p = new PlayerState();
-
-    p.id = player.id;
-    p.name = player.name;
-    p.x = player.x;
-    p.y = player.y;
-    p.z = player.z;
-    p.currentHp = player.hp;
-
-    this.state.players.set(client.sessionId, p);
-
-    // Create player entity for combat system
+    // Create entity first (source of truth)
     const playerEntity = new PlayerEntity(
       player.id,
       client.sessionId,
@@ -770,19 +670,16 @@ export class WorldRoom extends Room<MapState> {
         damageReduction: 0,
       }
     );
-
     this.playerEntities.set(client.sessionId, playerEntity);
 
-    // Sync combat stats to schema
-    p.maxHp = playerEntity.stats.maxHp;
-    p.baseDamage = playerEntity.stats.baseDamage;
-    p.attackSpeed = playerEntity.stats.attackSpeed;
-    p.attackRange = playerEntity.stats.attackRange;
-    p.defense = playerEntity.stats.defense;
-    p.damageMultiplier = playerEntity.stats.damageMultiplier;
-    p.damageReduction = playerEntity.stats.damageReduction;
+    // Create schema and sync from entity
+    const p = new PlayerState();
+    p.id = player.id;
+    p.name = player.name;
+    playerEntity.syncToSchema(p);
+    this.state.players.set(client.sessionId, p);
 
-    console.log(`👤 ${p.name} entrou no mundo`);
+    console.log(`👤 ${playerEntity.name} entrou no mundo`);
 
     // Send obstacle data to client so they can spawn 3D assets
     this.send(client, "spawn_obstacles", {
@@ -791,13 +688,18 @@ export class WorldRoom extends Room<MapState> {
   }
 
   async onLeave(client: Client) {
-    const player = this.state.players.get(client.sessionId);
-    if (player) {
+    const entity = this.playerEntities.get(client.sessionId);
+    if (entity) {
       await prisma.player.update({
-        where: { id: player.id },
-        data: { x: player.x, y: player.y, hp: player.currentHp },
+        where: { id: entity.id },
+        data: {
+          x: entity.position.x,
+          y: entity.position.y,
+          z: entity.position.z,
+          hp: entity.stats.currentHp,
+        },
       });
-      console.log(`💾 Salvou ${player.name}`);
+      console.log(`💾 Salvou ${entity.name}`);
       this.state.players.delete(client.sessionId);
       this.playerEntities.delete(client.sessionId);
     }

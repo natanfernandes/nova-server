@@ -1,4 +1,5 @@
 import { BaseEntity, CombatStats, Position } from "./BaseEntity";
+import { MonsterState } from "../schema/Monster";
 
 export interface MonsterConfig {
   name: string;
@@ -36,11 +37,40 @@ export class MonsterEntity extends BaseEntity {
       defense: config.defense || 0,
       damageMultiplier: 1.0,
       damageReduction: 0,
+      walkSpeed: 2.0,
     };
 
     super(id, name, position, defaultStats);
     this.respawnTime = config.respawnTime || 30; // 30 seconds default
     this.spawnPosition = { ...position }; // Store original spawn point
+  }
+
+  /**
+   * Sync all entity state to the Colyseus schema for network replication.
+   * Does NOT overwrite id/name (immutable after creation).
+   */
+  public syncToSchema(schema: MonsterState): void {
+    // Position
+    schema.x = this.position.x;
+    schema.y = this.position.y;
+    schema.z = this.position.z;
+
+    // Direction (MonsterState has no dirY)
+    schema.dirX = this.dirX;
+    schema.dirZ = this.dirZ;
+
+    // Combat stats
+    schema.currentHp = this.stats.currentHp;
+    schema.maxHp = this.stats.maxHp;
+    schema.baseDamage = this.stats.baseDamage;
+    schema.attackSpeed = this.stats.attackSpeed;
+    schema.attackRange = this.stats.attackRange;
+    schema.defense = this.stats.defense;
+
+    // State
+    schema.isDead = this.isDead;
+    schema.isAttacking = this.isAttacking;
+    schema.targetId = this.targetId;
   }
 
   /**

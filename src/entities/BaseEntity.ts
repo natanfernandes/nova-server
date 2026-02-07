@@ -21,6 +21,13 @@ export interface Position {
   z: number;
 }
 
+/** Minimal interface for collision system - both entities and schemas satisfy this */
+export interface Positionable {
+  id: string;
+  x: number;
+  z: number;
+}
+
 export abstract class BaseEntity {
   public id: string;
   public name: string;
@@ -28,6 +35,15 @@ export abstract class BaseEntity {
   public stats: CombatStats;
   public lastAttackTime: number = 0;
   public isDead: boolean = false;
+
+  // Movement direction (normalized vector)
+  public dirX: number = 0;
+  public dirY: number = 0;
+  public dirZ: number = 0;
+
+  // Combat UI state
+  public isAttacking: boolean = false;
+  public targetId: string = "";
 
   constructor(
     id: string,
@@ -39,6 +55,33 @@ export abstract class BaseEntity {
     this.name = name;
     this.position = position;
     this.stats = stats;
+  }
+
+  /** Proxy getter for Positionable interface compatibility */
+  public get x(): number { return this.position.x; }
+  public get z(): number { return this.position.z; }
+
+  public setDirection(dirX: number, dirY: number, dirZ: number): void {
+    this.dirX = dirX;
+    this.dirY = dirY;
+    this.dirZ = dirZ;
+  }
+
+  public stopMovement(): void {
+    this.dirX = 0;
+    this.dirY = 0;
+    this.dirZ = 0;
+  }
+
+  public isMoving(): boolean {
+    return this.dirX !== 0 || this.dirY !== 0 || this.dirZ !== 0;
+  }
+
+  public calculateMovement(speed: number, delta: number): { newX: number; newZ: number } {
+    return {
+      newX: this.position.x + this.dirX * speed * delta,
+      newZ: this.position.z + this.dirZ * speed * delta,
+    };
   }
 
   /**

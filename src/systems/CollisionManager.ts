@@ -1,4 +1,4 @@
-import { PlayerState } from "../schema/Player";
+import { Positionable } from "../entities/BaseEntity";
 import { Box, CollisionShape } from "../utils/obstacles";
 
 /**
@@ -116,10 +116,10 @@ export class CollisionManager {
    * Check if a position collides with any other players
    */
   checkPlayerCollision(
-    currentPlayer: PlayerState,
+    currentPlayer: Positionable,
     newX: number,
     newZ: number,
-    allPlayers: Iterable<PlayerState>
+    allPlayers: Iterable<Positionable>
   ): boolean {
     for (const otherPlayer of allPlayers) {
       // Skip self
@@ -144,10 +144,10 @@ export class CollisionManager {
    * Returns collision type: null | 'map' | 'player' | 'both'
    */
   checkAllCollisions(
-    currentPlayer: PlayerState,
+    currentPlayer: Positionable,
     newX: number,
     newZ: number,
-    allPlayers: Iterable<PlayerState>
+    allPlayers: Iterable<Positionable>
   ): { map: boolean; player: boolean; any: boolean } {
     const mapCollision = this.checkMapCollision(newX, newZ);
     const playerCollision = this.checkPlayerCollision(currentPlayer, newX, newZ, allPlayers);
@@ -176,8 +176,8 @@ export class CollisionManager {
     currentZ: number,
     targetX: number,
     targetZ: number,
-    currentPlayer?: PlayerState,
-    allPlayers?: Iterable<PlayerState>
+    currentPlayer?: Positionable,
+    allPlayers?: Iterable<Positionable>
   ): { x: number; z: number; collided: boolean } {
     // Check if current position is already colliding (player is stuck inside)
     const currentCollision = this.checkMapCollision(currentX, currentZ);
@@ -229,7 +229,7 @@ export class CollisionManager {
     maxX: number,
     minZ: number,
     maxZ: number,
-    allPlayers: Iterable<PlayerState>,
+    allPlayers: Iterable<Positionable>,
     maxAttempts: number = 50
   ): { x: number; z: number } | null {
     for (let i = 0; i < maxAttempts; i++) {
