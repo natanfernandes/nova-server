@@ -27,6 +27,8 @@ import { PlayerEntity } from "../entities/PlayerEntity";
 import { MonsterEntity } from "../entities/MonsterEntity";
 import { CombatManager } from "../systems/CombatManager";
 
+// TODO: better integration with entity and schema (entity controls and reply on schema)
+// TODO: just check collision in nearby area instead of whole map
 export class WorldRoom extends Room<MapState> {
   maxClients = 100;
   SPEED = 5;
@@ -94,6 +96,7 @@ export class WorldRoom extends Room<MapState> {
           const playerEntity = this.playerEntities.get(client.sessionId);
 
           switch (type) {
+            //TODO: better handle movement update with method
             case "move":
               if (!player) return;
               const [dx, dy, dz] = message.dir;
@@ -122,7 +125,7 @@ export class WorldRoom extends Room<MapState> {
             case "skill":
               this.handlePlayerSkill(client, message);
               break;
-
+              //TODO: better handleing of damage and die check
             case "damage":
               if (!player) return;
               player.currentHp -= message.amount;
@@ -135,6 +138,7 @@ export class WorldRoom extends Room<MapState> {
   /**
    * Convert obstacle configurations to collision shapes
    */
+  // TODO: remove from here and put in collision manager
   convertObstaclesToCollisions(obstacles: typeof MAP_OBSTACLES.world): CollisionShape[] {
     return obstacles.map((obstacle) => {
       if (obstacle.collisionType === "box") {
