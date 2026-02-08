@@ -8,12 +8,6 @@ import { MonsterState } from "../schema/Monster";
 import { CollisionManager } from "../systems/CollisionManager";
 import { MAP_OBSTACLES } from "../config/mapCollisions";
 import {
-  getRandomDirection,
-  shouldDoAction,
-  getRandomInterval,
-  getDirectionToTarget,
-} from "../utils/movement";
-import {
   getMapBoundaries,
   getRandomPositionInMap,
   generateMapBoundaryCollisions,
@@ -22,6 +16,7 @@ import {
 import { CollisionShape } from "../utils/obstacles";
 import { PlayerEntity } from "../entities/PlayerEntity";
 import { MonsterEntity } from "../entities/MonsterEntity";
+import { MonsterAIManager } from "../systems/MonsterAIManager";
 
 // TODO: just check collision in nearby area instead of whole map
 export class WorldRoom extends Room<MapState> {
@@ -30,7 +25,6 @@ export class WorldRoom extends Room<MapState> {
   TICK_RATE = 50; // 50ms = 20 ticks per second
   PLAYER_RADIUS = 0.5; // collision radius for players
   MONSTER_RADIUS = 0.5; // collision radius for monsters
-  MONSTER_SPEED = 2; // monsters move slower than players
   ATTACK_RANGE = 2.0; // attack range for combat
   MAP = GAME_MAPS[MAPS_KEYS.WORLD];
   MAP_BOUNDARIES: MapBoundaries;
@@ -44,11 +38,8 @@ export class WorldRoom extends Room<MapState> {
   playerEntities: Map<string, PlayerEntity> = new Map(); // sessionId -> PlayerEntity
   monsterEntities: Map<string, MonsterEntity> = new Map();
 
-  // Monster AI timers (per monster)
-  monsterAITimers: Map<string, number> = new Map();
-
-  // Monster combat state
-  monsterAggro: Map<string, string> = new Map(); // monsterId -> playerSessionId
+  // Monster AI system
+  monsterAIManager!: MonsterAIManager;
 
   onCreate() {
     console.log("🌍 WorldRoom created");
@@ -77,6 +68,14 @@ export class WorldRoom extends Room<MapState> {
     console.log(`✅ Loaded ${obstacleCollisions.length} obstacles with collision`);
 
     this.spawnMonstersOnCreate();
+
+    // Initialize monster AI system
+    this.monsterAIManager = new MonsterAIManager(
+      this.monsterEntities,
+      this.playerEntities,
+      this.collisionManager
+    );
+
     // Loop principal (20Hz = 50ms per tick)
     this.setSimulationInterval((deltaMs) => this.update(deltaMs / 1000), this.TICK_RATE);
 
@@ -196,7 +195,21 @@ export class WorldRoom extends Room<MapState> {
     }
 
     // 2. Update monsters (AI + movement on entities)
-    this.updateMonsterAI(delta);
+    const aiEvents = this.monsterAIManager.update(delta);
+    for (const event of aiEvents) {
+      if (event.type === "monster_attack") {
+        this.broadcast("monster_attacked", {
+          monsterId: event.monsterId,
+          monsterName: event.monsterName,
+          targetId: event.targetId,
+          targetName: event.targetName,
+          damage: event.damage,
+          killed: event.killed,
+          targetHp: event.targetHp,
+          targetMaxHp: event.targetMaxHp,
+        });
+      }
+    }
 
     // 3. Sync all entities to schemas (single pass per tick)
     this.syncAllEntitiesToSchemas();
@@ -241,139 +254,6 @@ export class WorldRoom extends Room<MapState> {
     // Y movement (jumping, etc.) - no collision check for now
     if (entity.dirY !== 0) {
       entity.position.y += entity.dirY * this.SPEED * delta;
-    }
-  }
-
-  updateMonsterAI(delta: number) {
-    for (const [monsterId, entity] of this.monsterEntities) {
-      if (entity.isDead) continue;
-
-      // Check if monster has aggro target
-      const targetSessionId = this.monsterAggro.get(monsterId);
-      if (targetSessionId) {
-        this.updateMonsterCombatAI(entity, targetSessionId, delta);
-      } else {
-        // No aggro - wander behavior
-        this.updateMonsterWanderAI(entity, delta);
-      }
-
-      // Move monster if it has direction
-      if (entity.isMoving()) {
-        this.updateMonsterMovement(entity, delta);
-      }
-    }
-  }
-
-  updateMonsterCombatAI(monster: MonsterEntity, targetSessionId: string, _delta: number) {
-    const targetEntity = this.playerEntities.get(targetSessionId);
-
-    // Clear aggro if target is gone or dead
-    if (!targetEntity || targetEntity.isDead) {
-      this.monsterAggro.delete(monster.id);
-      monster.targetId = "";
-      return;
-    }
-
-    // Calculate direction and distance to player
-    const { dirX, dirZ, distance } = getDirectionToTarget(
-      monster.position.x, monster.position.z,
-      targetEntity.position.x, targetEntity.position.z
-    );
-
-    // If player is too far, drop aggro (leash distance)
-    const LEASH_DISTANCE = 15.0;
-    if (distance > LEASH_DISTANCE) {
-      this.monsterAggro.delete(monster.id);
-      monster.targetId = "";
-      monster.stopMovement();
-      return;
-    }
-
-    // If in attack range, stop and attack
-    if (distance <= monster.stats.attackRange) {
-      console.log(`👹 ${monster.name} in range (${distance.toFixed(2)} <= ${monster.stats.attackRange}), attempting attack`);
-      monster.stopMovement();
-      this.tryMonsterAttack(monster, targetEntity);
-    } else {
-      // Chase the player
-      monster.dirX = dirX;
-      monster.dirZ = dirZ;
-    }
-  }
-
-  updateMonsterWanderAI(monster: MonsterEntity, delta: number) {
-    // Get or initialize timer for this monster
-    let timer = this.monsterAITimers.get(monster.id) || 0;
-    timer -= delta;
-
-    // Every 2-5 seconds, choose a new random direction (wander behavior)
-    if (timer <= 0) {
-      if (shouldDoAction(0.7)) {
-        // 70% chance to move - set random direction
-        const direction = getRandomDirection();
-        monster.dirX = direction.dirX;
-        monster.dirZ = direction.dirZ;
-      } else {
-        // 30% chance to stop
-        monster.stopMovement();
-      }
-
-      // Reset timer (2-5 seconds)
-      timer = getRandomInterval(2, 5);
-      this.monsterAITimers.set(monster.id, timer);
-    } else {
-      this.monsterAITimers.set(monster.id, timer);
-    }
-  }
-
-  tryMonsterAttack(monster: MonsterEntity, targetPlayer: PlayerEntity) {
-    const result = monster.attack(targetPlayer, Date.now());
-
-    if (!result.success) {
-      console.log(`👹 Monster attack failed: ${result.reason}`);
-      return;
-    }
-
-    // Broadcast monster attack to all clients
-    this.broadcast("monster_attacked", {
-      monsterId: monster.id,
-      monsterName: monster.name,
-      targetId: targetPlayer.id,
-      targetName: targetPlayer.name,
-      damage: result.damage,
-      killed: result.killed,
-      targetHp: targetPlayer.stats.currentHp,
-      targetMaxHp: targetPlayer.stats.maxHp,
-    });
-
-    console.log(
-      `👹 ${monster.name} attacked ${targetPlayer.name} for ${result.damage} damage (${targetPlayer.stats.currentHp}/${targetPlayer.stats.maxHp} HP)`
-    );
-
-    // Reset attacking state after a short delay
-    setTimeout(() => {
-      monster.isAttacking = false;
-    }, 100);
-  }
-
-  updateMonsterMovement(monster: MonsterEntity, delta: number) {
-    const { newX, newZ } = monster.calculateMovement(this.MONSTER_SPEED, delta);
-
-    // Try to move with collision sliding
-    const slideResult = this.collisionManager.trySlideMovement(
-      monster.position.x,
-      monster.position.z,
-      newX,
-      newZ
-    );
-
-    // Update monster entity position (may be slid along walls)
-    monster.setPosition(slideResult.x, monster.position.y, slideResult.z);
-
-    // If monster is completely blocked, force new direction next tick
-    if (slideResult.collided && slideResult.x === monster.position.x && slideResult.z === monster.position.z) {
-      monster.stopMovement();
-      this.monsterAITimers.set(monster.id, 0); // Force new direction next tick
     }
   }
 
@@ -424,7 +304,7 @@ export class WorldRoom extends Room<MapState> {
 
     // Set monster aggro to attacker (monster will fight back)
     if (targetType === "monster" && !targetEntity.isDead) {
-      this.monsterAggro.set(targetId, client.sessionId);
+      this.monsterAIManager.setAggro(targetId, client.sessionId);
       targetEntity.targetId = client.sessionId;
     }
 
@@ -446,7 +326,7 @@ export class WorldRoom extends Room<MapState> {
 
     // Handle monster death and respawn
     if (result.killed && targetType === "monster") {
-      this.monsterAggro.delete(targetId);
+      this.monsterAIManager.clearAggro(targetId);
 
       setTimeout(() => {
         this.handleMonsterRespawn(targetId);
@@ -512,7 +392,7 @@ export class WorldRoom extends Room<MapState> {
 
     // Handle monster death and respawn
     if (result.killed && targetType === "monster" && targetEntity) {
-      this.monsterAggro.delete(targetId);
+      this.monsterAIManager.clearAggro(targetId);
 
       setTimeout(() => {
         this.handleMonsterRespawn(targetId);
@@ -536,8 +416,8 @@ export class WorldRoom extends Room<MapState> {
     monsterEntity.respawn();
 
     // Clear any leftover aggro so monster doesn't immediately chase a player
-    this.monsterAggro.delete(monsterId);
-    this.monsterAITimers.delete(monsterId);
+    this.monsterAIManager.clearAggro(monsterId);
+    this.monsterAIManager.clearTimers(monsterId);
 
     // Immediate sync needed because this runs in setTimeout (outside tick loop)
     const monsterState = this.state.monsters.get(monsterId);
