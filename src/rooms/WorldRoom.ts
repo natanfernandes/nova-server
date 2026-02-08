@@ -19,6 +19,16 @@ import { MonsterEntity } from "../entities/MonsterEntity";
 import { MonsterAIManager } from "../systems/MonsterAIManager";
 import { CombatManager } from "../systems/CombatManager";
 import { SkillConfig } from "../entities/PlayerEntity";
+import {
+  AttackMessage,
+  SkillMessage,
+  TargetedSkillMessage,
+  AreaSkillMessage,
+  isValidMoveMessage,
+  isValidAttackMessage,
+  isValidSkillMessage,
+  isValidDamageMessage,
+} from "../types/messages";
 
 // TODO: just check collision in nearby area instead of whole map
 export class WorldRoom extends Room<MapState> {
@@ -87,34 +97,31 @@ export class WorldRoom extends Room<MapState> {
     // Loop principal (20Hz = 50ms per tick)
     this.setSimulationInterval((deltaMs) => this.update(deltaMs / 1000), this.TICK_RATE);
 
-    this.onMessage("*", (client: Client, type: string|number, message: any) => {
-        console.log(client.sessionId, "sent 'action' message: ", message);
+    this.onMessage("*", (client: Client, type: string | number, message: unknown) => {
         const playerEntity = this.playerEntities.get(client.sessionId);
 
         switch (type) {
           case "move":
             if (!playerEntity) return;
+            if (!isValidMoveMessage(message)) return;
             const [dx, dy, dz] = message.dir;
             playerEntity.setDirection(dx, dy, dz);
             playerEntity.lastProcessedInput = message.seq;
-
-            if (dx !== 0 || dy !== 0 || dz !== 0) {
-              console.log(`Player ${playerEntity.name} is moving to direction:`, dx, dy, dz);
-            } else {
-              console.log(`Player ${playerEntity.name} stopped moving`);
-            }
             break;
 
           case "attack":
+            if (!isValidAttackMessage(message)) return;
             this.handlePlayerAttack(client, message);
             break;
 
           case "skill":
+            if (!isValidSkillMessage(message)) return;
             this.handlePlayerSkill(client, message);
             break;
 
           case "damage":
             if (!playerEntity) return;
+            if (!isValidDamageMessage(message)) return;
             playerEntity.takeDamage(message.amount);
             break;
         }
@@ -268,7 +275,7 @@ export class WorldRoom extends Room<MapState> {
   /**
    * Handle player attack request
    */
-  handlePlayerAttack(client: Client, message: any) {
+  handlePlayerAttack(client: Client, message: AttackMessage) {
     const playerEntity = this.playerEntities.get(client.sessionId);
 
     if (!playerEntity) {
@@ -334,24 +341,16 @@ export class WorldRoom extends Room<MapState> {
 
     // Handle monster death and respawn
     if (result.killed && targetType === "monster") {
-      this.monsterAIManager.clearAggro(targetId);
-
-      setTimeout(() => {
-        this.handleMonsterRespawn(targetId);
-      }, (targetEntity as MonsterEntity).respawnTime * 1000);
+      this.scheduleMonsterRespawn(targetId, targetEntity as MonsterEntity);
     }
 
-    // Reset attacking state after a short delay
-    setTimeout(() => {
-      playerEntity.isAttacking = false;
-      playerEntity.targetId = "";
-    }, 100);
+    this.resetAttackState(playerEntity);
   }
 
   /**
    * Handle player skill request — routes to targeted or area handler
    */
-  handlePlayerSkill(client: Client, message: any) {
+  handlePlayerSkill(client: Client, message: SkillMessage) {
     const playerEntity = this.playerEntities.get(client.sessionId);
 
     if (!playerEntity) {
@@ -367,17 +366,19 @@ export class WorldRoom extends Room<MapState> {
       return;
     }
 
-    if (skillConfig.type === "area") {
-      this.handleAreaSkill(client, playerEntity, skillConfig, message);
+    if (skillConfig.type === "area" && message.targetType === "ground") {
+      this.handleAreaSkill(client, playerEntity, skillConfig, message as AreaSkillMessage);
+    } else if (skillConfig.type === "target" && message.targetType !== "ground") {
+      this.handleTargetedSkill(client, playerEntity, message as TargetedSkillMessage);
     } else {
-      this.handleTargetedSkill(client, playerEntity, message);
+      this.send(client, "skill_failed", { reason: "Invalid skill/message combination", skillId });
     }
   }
 
   /**
    * Handle targeted (single-target) skill
    */
-  handleTargetedSkill(client: Client, playerEntity: PlayerEntity, message: any) {
+  handleTargetedSkill(client: Client, playerEntity: PlayerEntity, message: TargetedSkillMessage) {
     const { skillId, targetId, targetType } = message;
 
     // Find target entity
@@ -419,30 +420,17 @@ export class WorldRoom extends Room<MapState> {
 
     // Handle monster death and respawn
     if (result.killed && targetType === "monster" && targetEntity) {
-      this.monsterAIManager.clearAggro(targetId);
-
-      setTimeout(() => {
-        this.handleMonsterRespawn(targetId);
-      }, (targetEntity as MonsterEntity).respawnTime * 1000);
+      this.scheduleMonsterRespawn(targetId, targetEntity as MonsterEntity);
     }
 
-    // Reset attacking state after a short delay
-    setTimeout(() => {
-      playerEntity.isAttacking = false;
-      playerEntity.targetId = "";
-    }, 100);
+    this.resetAttackState(playerEntity);
   }
 
   /**
    * Handle area (AoE) skill at a ground position
    */
-  handleAreaSkill(client: Client, playerEntity: PlayerEntity, skillConfig: SkillConfig, message: any) {
+  handleAreaSkill(client: Client, playerEntity: PlayerEntity, skillConfig: SkillConfig, message: AreaSkillMessage) {
     const { skillId, x, z } = message;
-
-    if (typeof x !== "number" || typeof z !== "number") {
-      this.send(client, "skill_failed", { reason: "Missing area coordinates", skillId });
-      return;
-    }
 
     // Find all monsters in the area radius
     const monstersArray = Array.from(this.monsterEntities.values());
@@ -485,28 +473,38 @@ export class WorldRoom extends Room<MapState> {
 
     // Handle deaths and aggro for each hit
     for (const hit of result.hits) {
+      const monsterEntity = this.monsterEntities.get(hit.targetId);
+      if (!monsterEntity) continue;
+
       if (hit.killed) {
-        const monsterEntity = this.monsterEntities.get(hit.targetId);
-        if (monsterEntity) {
-          this.monsterAIManager.clearAggro(hit.targetId);
-          setTimeout(() => {
-            this.handleMonsterRespawn(hit.targetId);
-          }, monsterEntity.respawnTime * 1000);
-        }
+        this.scheduleMonsterRespawn(hit.targetId, monsterEntity);
       } else {
         // Surviving monsters aggro the caster
         this.monsterAIManager.setAggro(hit.targetId, client.sessionId);
-        const monsterEntity = this.monsterEntities.get(hit.targetId);
-        if (monsterEntity) {
-          monsterEntity.targetId = client.sessionId;
-        }
+        monsterEntity.targetId = client.sessionId;
       }
     }
 
-    // Reset attacking state after a short delay
+    this.resetAttackState(playerEntity);
+  }
+
+  /**
+   * Schedule a killed monster for respawn and clear its AI state.
+   */
+  scheduleMonsterRespawn(monsterId: string, monster: MonsterEntity) {
+    this.monsterAIManager.clearAggro(monsterId);
     setTimeout(() => {
-      playerEntity.isAttacking = false;
-      playerEntity.targetId = "";
+      this.handleMonsterRespawn(monsterId);
+    }, monster.respawnTime * 1000);
+  }
+
+  /**
+   * Reset player combat UI state after a short delay.
+   */
+  resetAttackState(player: PlayerEntity) {
+    setTimeout(() => {
+      player.isAttacking = false;
+      player.targetId = "";
     }, 100);
   }
 
@@ -543,24 +541,31 @@ export class WorldRoom extends Room<MapState> {
   async onJoin(client: Client, options: any) {
     const playerName = options.name || `Player_${client.sessionId.slice(0, 4)}`;
 
-    // Load player from database or create new
-    let player = await prisma.player.findUnique({
-      where: { id: playerName },
-    });
-
-    if (!player) {
-      // Spawn player at random position in map
-      const spawnPos = getRandomPositionInMap(this.MAP_BOUNDARIES);
-      player = await prisma.player.create({
-        data: {
-          id: uuidv4(),
-          name: playerName,
-          x: spawnPos.x,
-          y: 1,
-          z: spawnPos.z,
-          hp: 100
-        },
+    let player;
+    try {
+      // Load player from database or create new
+      player = await prisma.player.findUnique({
+        where: { id: playerName },
       });
+
+      if (!player) {
+        // Spawn player at random position in map
+        const spawnPos = getRandomPositionInMap(this.MAP_BOUNDARIES);
+        player = await prisma.player.create({
+          data: {
+            id: uuidv4(),
+            name: playerName,
+            x: spawnPos.x,
+            y: 1,
+            z: spawnPos.z,
+            hp: 100
+          },
+        });
+      }
+    } catch (err) {
+      console.error(`DB error on join for ${playerName}:`, err);
+      client.leave(1000, "Database error");
+      return;
     }
 
     // Create entity first (source of truth)
@@ -600,16 +605,20 @@ export class WorldRoom extends Room<MapState> {
   async onLeave(client: Client) {
     const entity = this.playerEntities.get(client.sessionId);
     if (entity) {
-      await prisma.player.update({
-        where: { id: entity.id },
-        data: {
-          x: entity.position.x,
-          y: entity.position.y,
-          z: entity.position.z,
-          hp: entity.stats.currentHp,
-        },
-      });
-      console.log(`💾 Salvou ${entity.name}`);
+      try {
+        await prisma.player.update({
+          where: { id: entity.id },
+          data: {
+            x: entity.position.x,
+            y: entity.position.y,
+            z: entity.position.z,
+            hp: entity.stats.currentHp,
+          },
+        });
+        console.log(`💾 Salvou ${entity.name}`);
+      } catch (err) {
+        console.error(`DB error on leave for ${entity.name}:`, err);
+      }
       this.state.players.delete(client.sessionId);
       this.playerEntities.delete(client.sessionId);
     }
