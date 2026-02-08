@@ -1,6 +1,7 @@
 import { MonsterEntity } from "../entities/MonsterEntity";
 import { PlayerEntity } from "../entities/PlayerEntity";
 import { CollisionManager } from "./CollisionManager";
+import { TickTimerManager } from "./TickTimerManager";
 import {
   getRandomDirection,
   shouldDoAction,
@@ -38,7 +39,8 @@ export class MonsterAIManager {
   constructor(
     private monsterEntities: Map<string, MonsterEntity>,
     private playerEntities: Map<string, PlayerEntity>,
-    private collisionManager: CollisionManager
+    private collisionManager: CollisionManager,
+    private timerManager: TickTimerManager
   ) {}
 
   /**
@@ -152,9 +154,9 @@ export class MonsterAIManager {
       targetMaxHp: target.stats.maxHp,
     });
 
-    setTimeout(() => {
+    this.timerManager.schedule(`atk_reset:${monster.id}`, 0.1, () => {
       monster.isAttacking = false;
-    }, 100);
+    });
   }
 
   private updateMovement(monster: MonsterEntity, delta: number): void {

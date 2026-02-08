@@ -1,5 +1,5 @@
 import { Positionable } from "../entities/BaseEntity";
-import { Box, CollisionShape } from "../utils/obstacles";
+import { Box, CollisionShape, MapObstacle } from "../utils/obstacles";
 
 /**
  * Collision Manager
@@ -281,5 +281,31 @@ export class CollisionManager {
    */
   removeCollisionShapes(filter: (shape: CollisionShape) => boolean) {
     this.mapCollisions = this.mapCollisions.filter((s) => !filter(s));
+  }
+
+  /**
+   * Convert MapObstacle configs (used for scene spawning) into CollisionShapes.
+   */
+  static convertObstacles(obstacles: MapObstacle[]): CollisionShape[] {
+    return obstacles.map((obstacle) => {
+      if (obstacle.collisionType === "box") {
+        return {
+          type: "box" as const,
+          x: obstacle.position.x,
+          z: obstacle.position.z,
+          width: obstacle.size?.x || 2,
+          depth: obstacle.size?.z || 2,
+          sceneObjectId: obstacle.id,
+        };
+      } else {
+        return {
+          type: "circle" as const,
+          x: obstacle.position.x,
+          z: obstacle.position.z,
+          radius: obstacle.position.radius || obstacle.size?.radius || 1,
+          sceneObjectId: obstacle.id,
+        };
+      }
+    });
   }
 }

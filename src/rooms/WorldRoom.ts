@@ -13,12 +13,13 @@ import {
   generateMapBoundaryCollisions,
   MapBoundaries,
 } from "../utils/mapUtils";
-import { CollisionShape } from "../utils/obstacles";
 import { PlayerEntity } from "../entities/PlayerEntity";
 import { MonsterEntity } from "../entities/MonsterEntity";
 import { MonsterAIManager } from "../systems/MonsterAIManager";
 import { CombatManager } from "../systems/CombatManager";
+import { TickTimerManager } from "../systems/TickTimerManager";
 import { SkillConfig } from "../entities/PlayerEntity";
+import { resolveTarget } from "../utils/targetResolver";
 import {
   AttackMessage,
   SkillMessage,
@@ -56,6 +57,9 @@ export class WorldRoom extends Room<MapState> {
   // Combat utility (AoE queries)
   combatManager!: CombatManager;
 
+  // Tick-based timer system (replaces setTimeout for game events)
+  timerManager: TickTimerManager = new TickTimerManager();
+
   onCreate() {
     console.log("🌍 WorldRoom created");
 
@@ -66,7 +70,7 @@ export class WorldRoom extends Room<MapState> {
     const mapBoundaryWalls = generateMapBoundaryCollisions(this.MAP_BOUNDARIES);
 
     // Convert obstacle configs to collision shapes
-    const obstacleCollisions = this.convertObstaclesToCollisions(MAP_OBSTACLES.world);
+    const obstacleCollisions = CollisionManager.convertObstacles(MAP_OBSTACLES.world);
 
     // Debug: Log obstacle collisions
     console.log('🔍 Obstacle collisions:', JSON.stringify(obstacleCollisions, null, 2));
@@ -91,7 +95,8 @@ export class WorldRoom extends Room<MapState> {
     this.monsterAIManager = new MonsterAIManager(
       this.monsterEntities,
       this.playerEntities,
-      this.collisionManager
+      this.collisionManager,
+      this.timerManager
     );
 
     // Loop principal (20Hz = 50ms per tick)
@@ -125,34 +130,6 @@ export class WorldRoom extends Room<MapState> {
             playerEntity.takeDamage(message.amount);
             break;
         }
-    });
-  }
-
-  /**
-   * Convert obstacle configurations to collision shapes
-   */
-  // TODO: remove from here and put in collision manager
-  convertObstaclesToCollisions(obstacles: typeof MAP_OBSTACLES.world): CollisionShape[] {
-    return obstacles.map((obstacle) => {
-      if (obstacle.collisionType === "box") {
-        return {
-          type: "box" as const,
-          x: obstacle.position.x,
-          z: obstacle.position.z,
-          width: obstacle.size?.x || 2,
-          depth: obstacle.size?.z || 2,
-          sceneObjectId: obstacle.id,
-        };
-      } else {
-        // Circle collision
-        return {
-          type: "circle" as const,
-          x: obstacle.position.x,
-          z: obstacle.position.z,
-          radius: obstacle.position.radius || obstacle.size?.radius || 1,
-          sceneObjectId: obstacle.id,
-        };
-      }
     });
   }
 
@@ -202,6 +179,9 @@ export class WorldRoom extends Room<MapState> {
   }
 
   update(delta: number) {
+    // 0. Advance tick-based timers (respawns, attack resets, etc.)
+    this.timerManager.update(delta);
+
     // 1. Update player entities (movement)
     for (const entity of this.playerEntities.values()) {
       if (entity.isMoving()) {
@@ -250,6 +230,7 @@ export class WorldRoom extends Room<MapState> {
     }
   }
 
+  //TODO: this can be moved all to player entity
   updatePlayerMovement(entity: PlayerEntity, delta: number) {
     const { newX, newZ } = entity.calculateMovement(this.SPEED, delta);
 
@@ -283,16 +264,9 @@ export class WorldRoom extends Room<MapState> {
       return;
     }
 
-    const { targetId, targetType } = message; // targetType: "player" or "monster"
+    const { targetId, targetType } = message;
 
-    let targetEntity: PlayerEntity | MonsterEntity | undefined;
-
-    // Find target entity
-    if (targetType === "monster") {
-      targetEntity = this.monsterEntities.get(targetId);
-    } else if (targetType === "player") {
-      targetEntity = this.playerEntities.get(targetId);
-    }
+    const targetEntity = resolveTarget(targetId, targetType, this.playerEntities, this.monsterEntities);
 
     if (!targetEntity) {
       console.log(`⚠️ Attack failed: Target not found (${targetId})`);
@@ -301,8 +275,9 @@ export class WorldRoom extends Room<MapState> {
 
     // Stop movement if already in attack range (prevents sliding past target)
     // Keep moving if out of range (player still chasing)
-    const distance = playerEntity.distanceTo(targetEntity);
-    if (distance <= playerEntity.stats.attackRange) {
+    const distSq = playerEntity.distanceToSquared(targetEntity);
+    const rangeSq = playerEntity.stats.attackRange * playerEntity.stats.attackRange;
+    if (distSq <= rangeSq) {
       playerEntity.stopMovement();
     }
 
@@ -381,14 +356,7 @@ export class WorldRoom extends Room<MapState> {
   handleTargetedSkill(client: Client, playerEntity: PlayerEntity, message: TargetedSkillMessage) {
     const { skillId, targetId, targetType } = message;
 
-    // Find target entity
-    let targetEntity: PlayerEntity | MonsterEntity | null = null;
-
-    if (targetType === "monster" && targetId) {
-      targetEntity = this.monsterEntities.get(targetId) || null;
-    } else if (targetType === "player" && targetId) {
-      targetEntity = this.playerEntities.get(targetId) || null;
-    }
+    const targetEntity = resolveTarget(targetId, targetType, this.playerEntities, this.monsterEntities) || null;
 
     // Entity handles all skill logic (lookup, range, damage)
     const result = playerEntity.useSkill(skillId, targetEntity, Date.now());
@@ -493,19 +461,19 @@ export class WorldRoom extends Room<MapState> {
    */
   scheduleMonsterRespawn(monsterId: string, monster: MonsterEntity) {
     this.monsterAIManager.clearAggro(monsterId);
-    setTimeout(() => {
+    this.timerManager.schedule(`respawn:${monsterId}`, monster.respawnTime, () => {
       this.handleMonsterRespawn(monsterId);
-    }, monster.respawnTime * 1000);
+    });
   }
 
   /**
    * Reset player combat UI state after a short delay.
    */
   resetAttackState(player: PlayerEntity) {
-    setTimeout(() => {
+    this.timerManager.schedule(`atk_reset:${player.sessionId}`, 0.1, () => {
       player.isAttacking = false;
       player.targetId = "";
-    }, 100);
+    });
   }
 
   /**
@@ -521,7 +489,7 @@ export class WorldRoom extends Room<MapState> {
     this.monsterAIManager.clearAggro(monsterId);
     this.monsterAIManager.clearTimers(monsterId);
 
-    // Immediate sync needed because this runs in setTimeout (outside tick loop)
+    // Immediate sync so clients see respawn this tick (timer fires before syncAll)
     const monsterState = this.state.monsters.get(monsterId);
     if (monsterState) {
       monsterEntity.syncToSchema(monsterState);

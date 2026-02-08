@@ -1,5 +1,6 @@
 import { BaseEntity, CombatStats, Position, AttackResult } from "./BaseEntity";
 import { PlayerState } from "../schema/Player";
+import { getSkill } from "../config/skills";
 
 export interface SkillConfig {
   damage: number;
@@ -29,11 +30,6 @@ export interface AreaSkillResult {
 export class PlayerEntity extends BaseEntity {
   public sessionId: string; // Colyseus client session ID
   public lastProcessedInput: number = 0;
-
-  private skills: Map<string, SkillConfig> = new Map([
-    ["fireball", { damage: 25, range: 5.0, requiresTarget: true, type: "target" }],
-    ["meteor", { damage: 35, range: 8.0, requiresTarget: false, type: "area", radius: 3.0 }],
-  ]);
 
   constructor(
     id: string,
@@ -94,14 +90,14 @@ export class PlayerEntity extends BaseEntity {
   }
 
   public getSkill(skillId: string): SkillConfig | undefined {
-    return this.skills.get(skillId);
+    return getSkill(skillId);
   }
 
   /**
    * Use a skill against an optional target. Validates skill, range, and applies damage.
    */
   public useSkill(skillId: string, target: BaseEntity | null, _currentTime: number): SkillResult {
-    const skill = this.skills.get(skillId);
+    const skill = getSkill(skillId);
     if (!skill) {
       return { success: false, damage: 0, killed: false, skillId, reason: "Unknown skill" };
     }
@@ -116,8 +112,8 @@ export class PlayerEntity extends BaseEntity {
       }
 
       if (skill.range > 0) {
-        const distance = this.distanceTo(target);
-        if (distance > skill.range) {
+        const distSq = this.distanceToSquared(target);
+        if (distSq > skill.range * skill.range) {
           return { success: false, damage: 0, killed: false, skillId, reason: "Out of range" };
         }
       }
@@ -150,7 +146,7 @@ export class PlayerEntity extends BaseEntity {
     targetsInArea: BaseEntity[],
     _currentTime: number
   ): AreaSkillResult {
-    const skill = this.skills.get(skillId);
+    const skill = getSkill(skillId);
     if (!skill) {
       return { success: false, skillId, hits: [], x: castX, z: castZ, reason: "Unknown skill" };
     }
@@ -161,8 +157,8 @@ export class PlayerEntity extends BaseEntity {
     // Validate cast range (distance from caster to ground target)
     const dx = this.position.x - castX;
     const dz = this.position.z - castZ;
-    const distToCast = Math.sqrt(dx * dx + dz * dz);
-    if (distToCast > skill.range) {
+    const distSq = dx * dx + dz * dz;
+    if (distSq > skill.range * skill.range) {
       return { success: false, skillId, hits: [], x: castX, z: castZ, reason: "Cast position out of range" };
     }
 

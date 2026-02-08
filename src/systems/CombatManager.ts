@@ -32,11 +32,12 @@ export class CombatManager {
     range?: number
   ): BaseEntity[] {
     const searchRange = range !== undefined ? range : attacker.stats.attackRange;
+    const rangeSq = searchRange * searchRange;
     return targets.filter(
       (target) =>
         !target.isDead &&
         target.id !== attacker.id &&
-        attacker.distanceTo(target) <= searchRange
+        attacker.distanceToSquared(target) <= rangeSq
     );
   }
 
@@ -52,9 +53,9 @@ export class CombatManager {
     if (inRange.length === 0) return null;
 
     return inRange.reduce((nearest, current) => {
-      const currentDist = attacker.distanceTo(current);
-      const nearestDist = attacker.distanceTo(nearest);
-      return currentDist < nearestDist ? current : nearest;
+      const currentDistSq = attacker.distanceToSquared(current);
+      const nearestDistSq = attacker.distanceToSquared(nearest);
+      return currentDistSq < nearestDistSq ? current : nearest;
     });
   }
 
@@ -62,7 +63,8 @@ export class CombatManager {
    * Check if attacker can reach target (for AI)
    */
   public canReachTarget(attacker: BaseEntity, target: BaseEntity): boolean {
-    return !target.isDead && attacker.distanceTo(target) <= attacker.stats.attackRange;
+    const rangeSq = attacker.stats.attackRange * attacker.stats.attackRange;
+    return !target.isDead && attacker.distanceToSquared(target) <= rangeSq;
   }
 
   /**
@@ -75,11 +77,12 @@ export class CombatManager {
     radius: number,
     targets: BaseEntity[]
   ): BaseEntity[] {
+    const radiusSq = radius * radius;
     return targets.filter((target) => {
       if (target.isDead) return false;
       const dx = target.position.x - centerX;
       const dz = target.position.z - centerZ;
-      return Math.sqrt(dx * dx + dz * dz) <= radius;
+      return dx * dx + dz * dz <= radiusSq;
     });
   }
 }

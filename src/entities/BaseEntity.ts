@@ -166,6 +166,15 @@ export abstract class BaseEntity {
   }
 
   /**
+   * Squared distance — use for range comparisons to avoid sqrt in hot paths.
+   */
+  public distanceToSquared(other: BaseEntity): number {
+    const dx = this.position.x - other.position.x;
+    const dz = this.position.z - other.position.z;
+    return dx * dx + dz * dz;
+  }
+
+  /**
    * Update last attack time (call after successful attack)
    */
   public registerAttack(currentTime: number): void {
@@ -200,9 +209,10 @@ export abstract class BaseEntity {
       return { success: false, damage: 0, killed: false, reason: `Attack on cooldown (${Math.ceil(timeLeft)}ms remaining)` };
     }
 
-    const distance = this.distanceTo(target);
-    if (distance > this.stats.attackRange) {
-      return { success: false, damage: 0, killed: false, reason: `Target out of range (${distance.toFixed(2)} > ${this.stats.attackRange})` };
+    const distSq = this.distanceToSquared(target);
+    const rangeSq = this.stats.attackRange * this.stats.attackRange;
+    if (distSq > rangeSq) {
+      return { success: false, damage: 0, killed: false, reason: `Target out of range` };
     }
 
     // Execute attack
