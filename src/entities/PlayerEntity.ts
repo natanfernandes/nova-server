@@ -5,10 +5,21 @@ export interface SkillConfig {
   damage: number;
   range: number;
   requiresTarget: boolean;
+  type: "target" | "area";
+  radius?: number;
 }
 
 export interface SkillResult extends AttackResult {
   skillId: string;
+}
+
+export interface AreaSkillResult {
+  success: boolean;
+  skillId: string;
+  hits: Array<{ targetId: string; damage: number; killed: boolean }>;
+  x: number;
+  z: number;
+  reason?: string;
 }
 
 /**
@@ -20,7 +31,8 @@ export class PlayerEntity extends BaseEntity {
   public lastProcessedInput: number = 0;
 
   private skills: Map<string, SkillConfig> = new Map([
-    ["fireball", { damage: 25, range: 5.0, requiresTarget: true }],
+    ["fireball", { damage: 25, range: 5.0, requiresTarget: true, type: "target" }],
+    ["meteor", { damage: 35, range: 8.0, requiresTarget: false, type: "area", radius: 3.0 }],
   ]);
 
   constructor(
@@ -126,6 +138,53 @@ export class PlayerEntity extends BaseEntity {
     this.targetId = target?.id || "";
 
     return { success: true, damage, killed, skillId };
+  }
+
+  /**
+   * Use an area skill at a ground position. Caller must pass in targets found in radius.
+   */
+  public useAreaSkill(
+    skillId: string,
+    castX: number,
+    castZ: number,
+    targetsInArea: BaseEntity[],
+    _currentTime: number
+  ): AreaSkillResult {
+    const skill = this.skills.get(skillId);
+    if (!skill) {
+      return { success: false, skillId, hits: [], x: castX, z: castZ, reason: "Unknown skill" };
+    }
+    if (skill.type !== "area") {
+      return { success: false, skillId, hits: [], x: castX, z: castZ, reason: "Not an area skill" };
+    }
+
+    // Validate cast range (distance from caster to ground target)
+    const dx = this.position.x - castX;
+    const dz = this.position.z - castZ;
+    const distToCast = Math.sqrt(dx * dx + dz * dz);
+    if (distToCast > skill.range) {
+      return { success: false, skillId, hits: [], x: castX, z: castZ, reason: "Cast position out of range" };
+    }
+
+    // Apply damage to all targets in the area
+    const hits: AreaSkillResult["hits"] = [];
+    const baseDamage = Math.floor(skill.damage * this.stats.damageMultiplier);
+
+    for (const target of targetsInArea) {
+      if (target.isDead) continue;
+      target.takeDamage(baseDamage);
+      hits.push({
+        targetId: target.id,
+        damage: baseDamage,
+        killed: target.isDead,
+      });
+    }
+
+    // Set combat UI state
+    this.isAttacking = true;
+    this.targetId = "";
+
+    return { success: true, skillId, hits, x: castX, z: castZ };
   }
 
   /**

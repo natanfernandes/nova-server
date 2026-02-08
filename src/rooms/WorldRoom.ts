@@ -17,6 +17,8 @@ import { CollisionShape } from "../utils/obstacles";
 import { PlayerEntity } from "../entities/PlayerEntity";
 import { MonsterEntity } from "../entities/MonsterEntity";
 import { MonsterAIManager } from "../systems/MonsterAIManager";
+import { CombatManager } from "../systems/CombatManager";
+import { SkillConfig } from "../entities/PlayerEntity";
 
 // TODO: just check collision in nearby area instead of whole map
 export class WorldRoom extends Room<MapState> {
@@ -40,6 +42,9 @@ export class WorldRoom extends Room<MapState> {
 
   // Monster AI system
   monsterAIManager!: MonsterAIManager;
+
+  // Combat utility (AoE queries)
+  combatManager!: CombatManager;
 
   onCreate() {
     console.log("🌍 WorldRoom created");
@@ -68,6 +73,9 @@ export class WorldRoom extends Room<MapState> {
     console.log(`✅ Loaded ${obstacleCollisions.length} obstacles with collision`);
 
     this.spawnMonstersOnCreate();
+
+    // Initialize combat utility
+    this.combatManager = new CombatManager();
 
     // Initialize monster AI system
     this.monsterAIManager = new MonsterAIManager(
@@ -341,7 +349,7 @@ export class WorldRoom extends Room<MapState> {
   }
 
   /**
-   * Handle player skill request
+   * Handle player skill request — routes to targeted or area handler
    */
   handlePlayerSkill(client: Client, message: any) {
     const playerEntity = this.playerEntities.get(client.sessionId);
@@ -351,6 +359,25 @@ export class WorldRoom extends Room<MapState> {
       return;
     }
 
+    const { skillId } = message;
+    const skillConfig = playerEntity.getSkill(skillId);
+
+    if (!skillConfig) {
+      this.send(client, "skill_failed", { reason: "Unknown skill", skillId });
+      return;
+    }
+
+    if (skillConfig.type === "area") {
+      this.handleAreaSkill(client, playerEntity, skillConfig, message);
+    } else {
+      this.handleTargetedSkill(client, playerEntity, message);
+    }
+  }
+
+  /**
+   * Handle targeted (single-target) skill
+   */
+  handleTargetedSkill(client: Client, playerEntity: PlayerEntity, message: any) {
     const { skillId, targetId, targetType } = message;
 
     // Find target entity
@@ -397,6 +424,83 @@ export class WorldRoom extends Room<MapState> {
       setTimeout(() => {
         this.handleMonsterRespawn(targetId);
       }, (targetEntity as MonsterEntity).respawnTime * 1000);
+    }
+
+    // Reset attacking state after a short delay
+    setTimeout(() => {
+      playerEntity.isAttacking = false;
+      playerEntity.targetId = "";
+    }, 100);
+  }
+
+  /**
+   * Handle area (AoE) skill at a ground position
+   */
+  handleAreaSkill(client: Client, playerEntity: PlayerEntity, skillConfig: SkillConfig, message: any) {
+    const { skillId, x, z } = message;
+
+    if (typeof x !== "number" || typeof z !== "number") {
+      this.send(client, "skill_failed", { reason: "Missing area coordinates", skillId });
+      return;
+    }
+
+    // Find all monsters in the area radius
+    const monstersArray = Array.from(this.monsterEntities.values());
+    const targetsInArea = this.combatManager.getEntitiesInArea(
+      x, z,
+      skillConfig.radius || 0,
+      monstersArray
+    );
+
+    const result = playerEntity.useAreaSkill(skillId, x, z, targetsInArea, Date.now());
+
+    if (!result.success) {
+      this.send(client, "skill_failed", { reason: result.reason, skillId });
+      return;
+    }
+
+    // Broadcast area skill to all clients
+    this.broadcast("area_skill_used", {
+      playerId: client.sessionId,
+      playerName: playerEntity.name,
+      skillId: skillId,
+      x: result.x,
+      z: result.z,
+      radius: skillConfig.radius || 0,
+      hits: result.hits.map((hit) => {
+        const monster = this.monsterEntities.get(hit.targetId);
+        return {
+          targetId: hit.targetId,
+          damage: hit.damage,
+          killed: hit.killed,
+          targetHp: monster?.stats.currentHp ?? 0,
+          targetMaxHp: monster?.stats.maxHp ?? 0,
+        };
+      }),
+    });
+
+    console.log(
+      `✨ ${playerEntity.name} used ${skillId} at (${x.toFixed(1)}, ${z.toFixed(1)}), hit ${result.hits.length} targets`
+    );
+
+    // Handle deaths and aggro for each hit
+    for (const hit of result.hits) {
+      if (hit.killed) {
+        const monsterEntity = this.monsterEntities.get(hit.targetId);
+        if (monsterEntity) {
+          this.monsterAIManager.clearAggro(hit.targetId);
+          setTimeout(() => {
+            this.handleMonsterRespawn(hit.targetId);
+          }, monsterEntity.respawnTime * 1000);
+        }
+      } else {
+        // Surviving monsters aggro the caster
+        this.monsterAIManager.setAggro(hit.targetId, client.sessionId);
+        const monsterEntity = this.monsterEntities.get(hit.targetId);
+        if (monsterEntity) {
+          monsterEntity.targetId = client.sessionId;
+        }
+      }
     }
 
     // Reset attacking state after a short delay

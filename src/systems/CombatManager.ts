@@ -64,4 +64,22 @@ export class CombatManager {
   public canReachTarget(attacker: BaseEntity, target: BaseEntity): boolean {
     return !target.isDead && attacker.distanceTo(target) <= attacker.stats.attackRange;
   }
+
+  /**
+   * Get all living entities within a radius of a world position (for area skills).
+   * Uses a point origin, not an entity origin.
+   */
+  public getEntitiesInArea(
+    centerX: number,
+    centerZ: number,
+    radius: number,
+    targets: BaseEntity[]
+  ): BaseEntity[] {
+    return targets.filter((target) => {
+      if (target.isDead) return false;
+      const dx = target.position.x - centerX;
+      const dz = target.position.z - centerZ;
+      return Math.sqrt(dx * dx + dz * dz) <= radius;
+    });
+  }
 }
