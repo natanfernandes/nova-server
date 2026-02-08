@@ -1,7 +1,7 @@
 import config from "@colyseus/tools";
 import { monitor } from "@colyseus/monitor";
 import { playground } from "@colyseus/playground";
-import { WebSocketTransport } from "@colyseus/ws-transport";
+import { uWebSocketsTransport} from "@colyseus/uwebsockets-transport";
 
 /**
  * Import your Room files
@@ -10,7 +10,7 @@ import { WorldRoom } from "./rooms/WorldRoom";
 
 export default config({
     initializeTransport: (options) => {
-        return new WebSocketTransport({
+        return new uWebSocketsTransport({
             ...options,
             pingInterval: 10000
         });
